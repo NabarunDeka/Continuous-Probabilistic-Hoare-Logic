@@ -12,6 +12,7 @@ From Stdlib Require Import Bool.Bool.
 From Stdlib Require Import Ascii.
 From Stdlib Require Import ClassicalDescription.
 From Stdlib Require Import Lra.
+From Stdlib Require Import Lia.
 From Stdlib Require Import Lists.List.
 From Stdlib Require Import Arith.PeanoNat.
 
@@ -1180,6 +1181,10 @@ Definition c_lt (t1 t2 : Term) : CFormula :=
 Definition pformula_valid (eta : PFormula) : Prop :=
   forall ps : Pstate, psatisfies ps eta.
 
+(** Classical validity interprets the paper's boxed side conditions. *)
+Definition cformula_valid (gamma : CFormula) : Prop :=
+  forall v : state, satisfies v gamma.
+
 (** Analytical probabilistic syntax contains no expectation term. *)
 Fixpoint pterm_analytical (p : Pterm) : Prop :=
   match p with
@@ -1660,6 +1665,79 @@ Definition if_precondition
   p_and (condition_pformula eta1 guard)
     (condition_pformula eta2 (c_not guard)).
 
+(** Bounded families used by the while rule are total functions on [nat].
+    These folds observe exactly the entries with indices below [m]. *)
+Fixpoint finite_c_or (m : nat) (formulas : nat -> CFormula) : CFormula :=
+  match m with
+  | O => FFalse
+  | S m' => c_or (finite_c_or m' formulas) (formulas m')
+  end.
+
+Fixpoint finite_p_and (m : nat) (formulas : nat -> PFormula) : PFormula :=
+  match m with
+  | O => p_true
+  | S m' => p_and (finite_p_and m' formulas) (formulas m')
+  end.
+
+Fixpoint finite_r_sum (m : nat) (terms : nat -> R) : R :=
+  match m with
+  | O => 0%R
+  | S m' => (finite_r_sum m' terms + terms m')%R
+  end.
+
+(** All mass is concentrated on [gamma], and its total amount is [mass]. *)
+Definition p_concentrated_mass (gamma : CFormula) (mass : Pterm) : PFormula :=
+  p_and
+    (p_eq (PExpect (QIndicator gamma))
+      (PExpect (QIndicator c_true)))
+    (p_eq (PExpect (QIndicator c_true)) mass).
+
+(** Exact transition and exit probabilities produced by one loop-body step. *)
+Definition while_body_post
+  (m : nat) (regions : nat -> CFormula) (transition_row : nat -> R)
+  (beta : CFormula) (q : PConstruct) (exit : R) : PFormula :=
+  p_and
+    (finite_p_and m
+      (fun j =>
+        p_eq (PExpect (QIndicator (regions j)))
+          (PConst (transition_row j))))
+    (p_eq (PExpect (condition_pconstruct q (c_not beta))) (PConst exit)).
+
+(** The regions form a finite partition of the loop guard. *)
+Definition while_regions_cover
+  (m : nat) (beta : CFormula) (regions : nat -> CFormula) : Prop :=
+  cformula_valid (FImpl beta (finite_c_or m regions)).
+
+Definition while_regions_in_guard
+  (m : nat) (beta : CFormula) (regions : nat -> CFormula) : Prop :=
+  forall i : nat,
+    (i < m)%nat -> cformula_valid (FImpl (regions i) beta).
+
+(** Quantifying only [j < i] checks each unordered pair exactly once. *)
+Definition while_regions_disjoint
+  (m : nat) (regions : nat -> CFormula) : Prop :=
+  forall i j : nat,
+    (i < m)%nat -> (j < i)%nat ->
+    cformula_valid (c_not (c_and (regions i) (regions j))).
+
+(** Every region exits positively or reaches an earlier region positively. *)
+Definition while_progress
+  (m : nat) (transitions : nat -> nat -> R) (exits : nat -> R) : Prop :=
+  forall i : nat,
+    (i < m)%nat ->
+    (0 < exits i)%R \/
+    exists j : nat, (j < i)%nat /\ (0 < transitions i j)%R.
+
+(** [solution] is a bounded fixed point of the certificate's linear system. *)
+Definition while_solution
+  (m : nat) (solution : nat -> R) (transitions : nat -> nat -> R)
+  (exits : nat -> R) : Prop :=
+  forall i : nat,
+    (i < m)%nat ->
+    solution i =
+      (finite_r_sum m (fun j => transitions i j * solution j) + exits i)%R /\
+    (0 <= solution i <= 1)%R.
+
 (** A classical formula expressing when a distribution is well formed. *)
 Definition distribution_valid_formula (d : Distribution) : CFormula :=
   match d with
@@ -1682,9 +1760,176 @@ Qed.
 Definition coin_probability_valid (r : R) : Prop :=
   (0 <= r /\ r <= 1)%R.
 
-(** The non-while fragment of the paper's Hoare calculus.  The preconditions
-    and postconditions remain syntactic formulas; semantic validity is used
-    only for the consequence and sampling side conditions. *)
+(** Scoped surface syntax for the CPHL abstract syntax trees.  The coercions
+    below only embed already-typed variables and real constants into the
+    corresponding syntax category; strings and semantic assertions remain
+    explicit. *)
+Coercion TProgVar : RealProgramVar >-> Term.
+Coercion TLogicVar : RealLogicVar >-> Term.
+Coercion TConst : R >-> Term.
+Coercion FProgBool : BoolProgramVar >-> CFormula.
+Coercion FLogicBool : BoolLogicVar >-> CFormula.
+Coercion PVar : ProbLogicVar >-> Pterm.
+Coercion PConst : R >-> Pterm.
+
+Declare Custom Entry cphl_expr.
+Declare Custom Entry cphl_prob.
+Declare Scope cphl_scope.
+Delimit Scope cphl_scope with cphl.
+
+(** [cphl_expr] contains terms, classical formulas, distributions, and
+    commands.  [cphl_prob] contains probability constructs, terms, and
+    formulas.  The dollar form splices an arbitrary Rocq expression into a
+    custom entry. *)
+Notation "<{ e }>" := e
+  (e custom cphl_expr at level 99) : cphl_scope.
+Notation "[[ e ]]" := e
+  (e custom cphl_prob at level 99) : cphl_scope.
+
+Notation "( x )" := x
+  (in custom cphl_expr at level 0, x at level 99) : cphl_scope.
+Notation "x" := x
+  (in custom cphl_expr at level 0, x constr at level 0) : cphl_scope.
+Notation "'$' ( x )" := x
+  (in custom cphl_expr at level 0, x constr at level 200) : cphl_scope.
+
+(** Real terms. *)
+Notation "x * y" := (TMul x y)
+  (in custom cphl_expr at level 40, left associativity) : cphl_scope.
+Notation "x + y" := (TAdd x y)
+  (in custom cphl_expr at level 50, left associativity) : cphl_scope.
+
+(** Classical formulas. *)
+Notation "'false'" := FFalse
+  (in custom cphl_expr at level 0) : cphl_scope.
+Notation "'true'" := c_true
+  (in custom cphl_expr at level 0) : cphl_scope.
+Notation "x <= y" := (FLe x y)
+  (in custom cphl_expr at level 60, no associativity) : cphl_scope.
+Notation "x < y" := (c_lt x y)
+  (in custom cphl_expr at level 60, no associativity) : cphl_scope.
+Notation "x = y" := (c_and (FLe x y) (FLe y x))
+  (in custom cphl_expr at level 60, no associativity) : cphl_scope.
+Notation "x >= y" := (FLe y x)
+  (in custom cphl_expr at level 60, no associativity) : cphl_scope.
+Notation "x > y" := (c_lt y x)
+  (in custom cphl_expr at level 60, no associativity) : cphl_scope.
+Notation "'~' x" := (c_not x)
+  (in custom cphl_expr at level 70, right associativity) : cphl_scope.
+Notation "x /\ y" := (c_and x y)
+  (in custom cphl_expr at level 75, right associativity) : cphl_scope.
+Notation "x \/ y" := (c_or x y)
+  (in custom cphl_expr at level 80, right associativity) : cphl_scope.
+Notation "x -> y" := (FImpl x y)
+  (in custom cphl_expr at level 85, right associativity) : cphl_scope.
+Notation "x <-> y" := (c_iff x y)
+  (in custom cphl_expr at level 86, no associativity) : cphl_scope.
+
+(** Continuous distributions. *)
+Notation "'uniform' ( lower , upper )" := (Uniform lower upper)
+  (in custom cphl_expr at level 0,
+   lower custom cphl_expr at level 88,
+   upper custom cphl_expr at level 88) : cphl_scope.
+Notation "'laplace' ( location , scale )" := (Laplace location scale)
+  (in custom cphl_expr at level 0,
+   location custom cphl_expr at level 88,
+   scale custom cphl_expr at level 88) : cphl_scope.
+Notation "'gaussian' ( mean , deviation )" := (Gaussian mean deviation)
+  (in custom cphl_expr at level 0,
+   mean custom cphl_expr at level 88,
+   deviation custom cphl_expr at level 88) : cphl_scope.
+
+(** Commands.  Boolean assignment retains the old formalization's distinct
+    [b=] token so real and Boolean assignment remain unambiguous. *)
+Notation "'skip'" := CSkip
+  (in custom cphl_expr at level 0) : cphl_scope.
+Notation "x := t" := (CRealAssign x t)
+  (in custom cphl_expr at level 0,
+   x constr at level 0, t custom cphl_expr at level 88,
+   no associativity) : cphl_scope.
+Notation "b 'b=' beta" := (CBoolAssign b beta)
+  (in custom cphl_expr at level 0,
+   b constr at level 0, beta custom cphl_expr at level 88,
+   no associativity) : cphl_scope.
+Notation "b 'toss' r" := (CBoolToss b r)
+  (in custom cphl_expr at level 0,
+   b constr at level 0, r custom cphl_expr at level 0,
+   no associativity) : cphl_scope.
+Notation "x 'sample' d" := (CRealSample x d)
+  (in custom cphl_expr at level 0,
+   x constr at level 0, d custom cphl_expr at level 0,
+   no associativity) : cphl_scope.
+Notation "'if' beta 'then' s1 'else' s2 'end'" := (CIf beta s1 s2)
+  (in custom cphl_expr at level 89,
+   beta custom cphl_expr at level 88,
+   s1 custom cphl_expr at level 99,
+   s2 custom cphl_expr at level 99) : cphl_scope.
+Notation "'while' beta 'do' body 'end'" := (CWhile beta body)
+  (in custom cphl_expr at level 89,
+   beta custom cphl_expr at level 88,
+   body custom cphl_expr at level 99) : cphl_scope.
+Notation "s1 ; s2" := (CSeq s1 s2)
+  (in custom cphl_expr at level 90, right associativity) : cphl_scope.
+
+Notation "( x )" := x
+  (in custom cphl_prob at level 0, x at level 99) : cphl_scope.
+Notation "x" := x
+  (in custom cphl_prob at level 0, x constr at level 0) : cphl_scope.
+Notation "'$' ( x )" := x
+  (in custom cphl_prob at level 0, x constr at level 200) : cphl_scope.
+
+(** Probability constructs and terms. *)
+Notation "'indicator' [ gamma ]" := (QIndicator gamma)
+  (in custom cphl_prob at level 0,
+   gamma custom cphl_expr at level 99) : cphl_scope.
+Notation "'integral' x '~' d ',' q" := (QIntegral x d q)
+  (in custom cphl_prob at level 90, right associativity,
+   x constr at level 0,
+   d custom cphl_expr at level 0,
+   q custom cphl_prob at level 90) : cphl_scope.
+Notation "'E' [ q ]" := (PExpect q)
+  (in custom cphl_prob at level 0,
+   q custom cphl_prob at level 99) : cphl_scope.
+Notation "'Pr' [ gamma ]" := (PExpect (QIndicator gamma))
+  (in custom cphl_prob at level 0,
+   gamma custom cphl_expr at level 99) : cphl_scope.
+Notation "x * y" := (PMul x y)
+  (in custom cphl_prob at level 40, left associativity) : cphl_scope.
+Notation "x + y" := (PAdd x y)
+  (in custom cphl_prob at level 50, left associativity) : cphl_scope.
+
+(** Probabilistic formulas. *)
+Notation "'false'" := PFFalse
+  (in custom cphl_prob at level 0) : cphl_scope.
+Notation "'true'" := p_true
+  (in custom cphl_prob at level 0) : cphl_scope.
+Notation "x <= y" := (PFLe x y)
+  (in custom cphl_prob at level 60, no associativity) : cphl_scope.
+Notation "x < y" := (p_lt x y)
+  (in custom cphl_prob at level 60, no associativity) : cphl_scope.
+Notation "x = y" := (p_eq x y)
+  (in custom cphl_prob at level 60, no associativity) : cphl_scope.
+Notation "x >= y" := (PFLe y x)
+  (in custom cphl_prob at level 60, no associativity) : cphl_scope.
+Notation "x > y" := (p_lt y x)
+  (in custom cphl_prob at level 60, no associativity) : cphl_scope.
+Notation "'almost_sure' [ gamma ]" := (p_almost_sure gamma)
+  (in custom cphl_prob at level 0,
+   gamma custom cphl_expr at level 99) : cphl_scope.
+Notation "'~' x" := (p_not x)
+  (in custom cphl_prob at level 70, right associativity) : cphl_scope.
+Notation "x /\ y" := (p_and x y)
+  (in custom cphl_prob at level 75, right associativity) : cphl_scope.
+Notation "x \/ y" := (p_or x y)
+  (in custom cphl_prob at level 80, right associativity) : cphl_scope.
+Notation "x -> y" := (PFImpl x y)
+  (in custom cphl_prob at level 85, right associativity) : cphl_scope.
+Notation "x <-> y" := (p_iff x y)
+  (in custom cphl_prob at level 86, no associativity) : cphl_scope.
+
+(** The paper's syntactic Hoare calculus.  The preconditions and
+    postconditions remain syntactic formulas; semantic validity is used only
+    for rule side conditions. *)
 Inductive hoare_derivable : PFormula -> Cmd -> PFormula -> Prop :=
   | HFree :
       forall (eta : PFormula) (s : Cmd),
@@ -1771,9 +2016,41 @@ Inductive hoare_derivable : PFormula -> Cmd -> PFormula -> Prop :=
       forall (eta0 eta1 eta2 : PFormula) (s : Cmd),
         hoare_derivable eta0 s eta1 ->
         hoare_derivable eta0 s eta2 ->
-        hoare_derivable eta0 s (p_and eta1 eta2).
+        hoare_derivable eta0 s (p_and eta1 eta2)
+  | HWhile :
+      forall (m k : nat) (beta : CFormula) (body : Cmd) (q : PConstruct)
+        (regions : nat -> CFormula) (solution exits : nat -> R)
+        (transitions : nat -> nat -> R) (y : ProbLogicVar),
+        (k < m)%nat ->
+        while_regions_cover m beta regions ->
+        while_regions_in_guard m beta regions ->
+        while_regions_disjoint m regions ->
+        while_progress m transitions exits ->
+        (forall i : nat,
+          (i < m)%nat ->
+          hoare_derivable
+            (p_concentrated_mass (regions i) (PConst 1%R))
+            body
+            (while_body_post m regions (transitions i) beta q (exits i))) ->
+        while_solution m solution transitions exits ->
+        hoare_derivable
+          (p_concentrated_mass (regions k) (PVar y))
+          (CWhile beta body)
+          (p_eq (PExpect (condition_pconstruct q (c_not beta)))
+            (PMul (PConst (solution k)) (PVar y))).
 
-(** Compilation checks for the non-while Hoare rules. *)
+(** Hoare triples use a separate scope so importing this module does not
+    activate proof-judgment notation implicitly. *)
+Declare Scope cphl_hoare_scope.
+Delimit Scope cphl_hoare_scope with cphl_hoare.
+
+Notation "{{ eta }} c {{ theta }}" := (hoare_derivable eta c theta)
+  (at level 2,
+   eta custom cphl_prob at level 99,
+   c custom cphl_expr at level 99,
+   theta custom cphl_prob at level 99) : cphl_hoare_scope.
+
+(** Compilation checks for the Hoare rules. *)
 Section HoareRuleExamples.
   Definition demo_hoare_y1 : ProbLogicVar := prob_logic_var "y1".
   Definition demo_hoare_y2 : ProbLogicVar := prob_logic_var "y2".
@@ -1942,4 +2219,314 @@ Section HoareRuleExamples.
     - cbn [prob_logic_var_occurs_pterm]; tauto.
     - cbn [p_true prob_logic_var_occurs_pformula]; tauto.
   Qed.
+
+  (** Reduction checks for the finite-family encodings used by [HWhile]. *)
+  Example finite_c_or_two_example (formulas : nat -> CFormula) :
+    finite_c_or 2 formulas =
+      c_or (c_or FFalse (formulas 0%nat)) (formulas 1%nat).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example finite_p_and_two_example (formulas : nat -> PFormula) :
+    finite_p_and 2 formulas =
+      p_and (p_and p_true (formulas 0%nat)) (formulas 1%nat).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example finite_r_sum_two_example (terms : nat -> R) :
+    finite_r_sum 2 terms =
+      ((0 + terms 0%nat) + terms 1%nat)%R.
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example p_concentrated_mass_unfold_example
+    (gamma : CFormula) (mass : Pterm) :
+    p_concentrated_mass gamma mass =
+      p_and
+        (p_eq (PExpect (QIndicator gamma))
+          (PExpect (QIndicator c_true)))
+        (p_eq (PExpect (QIndicator c_true)) mass).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Definition demo_while_regions (_ : nat) : CFormula := demo_hoare_event.
+  Definition demo_while_solution (_ : nat) : R := 1%R.
+  Definition demo_while_exits (_ : nat) : R := 1%R.
+  Definition demo_while_transitions (_ _ : nat) : R := 0%R.
+  Definition demo_while_q : PConstruct := QIndicator c_true.
+
+  Example while_body_post_one_region_example :
+    while_body_post 1 demo_while_regions (demo_while_transitions 0%nat)
+      demo_hoare_event demo_while_q (demo_while_exits 0%nat) =
+    p_and
+      (p_and p_true
+        (p_eq (PExpect (QIndicator (demo_while_regions 0%nat)))
+          (PConst (demo_while_transitions 0%nat 0%nat))))
+      (p_eq
+        (PExpect
+          (condition_pconstruct demo_while_q (c_not demo_hoare_event)))
+        (PConst (demo_while_exits 0%nat))).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Variable demo_while_body : Cmd.
+  Hypothesis demo_while_body_step :
+    hoare_derivable
+      (p_concentrated_mass (demo_while_regions 0%nat) (PConst 1%R))
+      demo_while_body
+      (while_body_post 1 demo_while_regions (demo_while_transitions 0%nat)
+        demo_hoare_event demo_while_q (demo_while_exits 0%nat)).
+
+  Example while_rule_one_region_example :
+    hoare_derivable
+      (p_concentrated_mass (demo_while_regions 0%nat) (PVar demo_hoare_y1))
+      (CWhile demo_hoare_event demo_while_body)
+      (p_eq
+        (PExpect
+          (condition_pconstruct demo_while_q (c_not demo_hoare_event)))
+        (PMul (PConst (demo_while_solution 0%nat)) (PVar demo_hoare_y1))).
+  Proof.
+    eapply HWhile with
+      (m := 1%nat) (k := 0%nat) (regions := demo_while_regions)
+      (solution := demo_while_solution) (exits := demo_while_exits)
+      (transitions := demo_while_transitions).
+    - lia.
+    - unfold while_regions_cover, cformula_valid, demo_while_regions.
+      intro v; cbn [finite_c_or c_or c_not satisfies]; tauto.
+    - unfold while_regions_in_guard, cformula_valid, demo_while_regions.
+      intros i Hi v; cbn [satisfies]; tauto.
+    - unfold while_regions_disjoint.
+      intros i j Hi Hj; lia.
+    - unfold while_progress, demo_while_exits.
+      intros i Hi; left; lra.
+    - intros i Hi.
+      assert (i = 0)%nat by lia.
+      subst i.
+      exact demo_while_body_step.
+    - unfold while_solution, demo_while_solution, demo_while_transitions,
+        demo_while_exits.
+      intros i Hi.
+      cbn [finite_r_sum].
+      split; lra.
+  Qed.
 End HoareRuleExamples.
+
+(** Focused checks for the scoped surface syntax.  These examples deliberately
+    compare notation with constructor trees, so later grammar changes cannot
+    silently alter precedence or associativity. *)
+Section NotationChecks.
+  Local Open Scope cphl_scope.
+  Local Open Scope cphl_hoare_scope.
+
+  Variables (notation_x notation_z : RealProgramVar).
+  Variable notation_X : RealLogicVar.
+  Variable notation_b : BoolProgramVar.
+  Variable notation_B : BoolLogicVar.
+  Variable notation_y : ProbLogicVar.
+  Variable notation_distribution : R -> Distribution.
+  Variable notation_pterm : R -> Pterm.
+
+  Example term_notation_expansion :
+    <{ notation_x + notation_X * 2 }> =
+      TAdd (TProgVar notation_x)
+        (TMul (TLogicVar notation_X) (TConst 2%R)).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example classical_connective_notation_expansion :
+    <{ ~ notation_b /\ true \/ false -> notation_B <-> true }> =
+      c_iff
+        (FImpl
+          (c_or (c_and (c_not (FProgBool notation_b)) c_true) FFalse)
+          (FLogicBool notation_B))
+        c_true.
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example classical_le_notation_expansion :
+    <{ notation_x <= notation_X }> =
+      FLe (TProgVar notation_x) (TLogicVar notation_X).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example classical_lt_notation_expansion :
+    <{ notation_x < notation_X }> =
+      c_lt (TProgVar notation_x) (TLogicVar notation_X).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example classical_eq_notation_expansion :
+    <{ notation_x = notation_X }> =
+      c_and
+        (FLe (TProgVar notation_x) (TLogicVar notation_X))
+        (FLe (TLogicVar notation_X) (TProgVar notation_x)).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example classical_ge_notation_expansion :
+    <{ notation_x >= notation_X }> =
+      FLe (TLogicVar notation_X) (TProgVar notation_x).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example classical_gt_notation_expansion :
+    <{ notation_x > notation_X }> =
+      c_lt (TLogicVar notation_X) (TProgVar notation_x).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example uniform_notation_expansion :
+    <{ uniform ( notation_x, notation_X + 1 ) }> =
+      Uniform (TProgVar notation_x)
+        (TAdd (TLogicVar notation_X) (TConst 1%R)).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example laplace_notation_expansion :
+    <{ laplace ( notation_x, 2 ) }> =
+      Laplace (TProgVar notation_x) (TConst 2%R).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example gaussian_notation_expansion :
+    <{ gaussian ( notation_X, 3 ) }> =
+      Gaussian (TLogicVar notation_X) (TConst 3%R).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example expression_antiquotation_expansion :
+    <{ notation_x sample $(notation_distribution 4%R) }> =
+      CRealSample notation_x (notation_distribution 4%R).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example indicator_notation_expansion :
+    [[ indicator[notation_b] ]] =
+      QIndicator (FProgBool notation_b).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example nested_integral_notation_expansion :
+    [[ integral notation_x ~ laplace ( 0, 1 ),
+       integral notation_z ~ gaussian ( notation_X, 2 ),
+       indicator[notation_x <= notation_X] ]] =
+      QIntegral notation_x (Laplace (TConst 0%R) (TConst 1%R))
+        (QIntegral notation_z
+          (Gaussian (TLogicVar notation_X) (TConst 2%R))
+          (QIndicator
+            (FLe (TProgVar notation_x) (TLogicVar notation_X)))).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example expectation_and_probability_notation_expansion :
+    [[ E[ indicator[notation_b] ] + Pr[notation_B] ]] =
+      PAdd
+        (PExpect (QIndicator (FProgBool notation_b)))
+        (PExpect (QIndicator (FLogicBool notation_B))).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example probabilistic_antiquotation_expansion :
+    [[ $(notation_pterm 5%R) + notation_y ]] =
+      PAdd (notation_pterm 5%R) (PVar notation_y).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example probabilistic_connective_notation_expansion :
+    [[ ~ (notation_y <= 0) /\ true \/ false ->
+       almost_sure[notation_b] <-> true ]] =
+      p_iff
+        (PFImpl
+          (p_or
+            (p_and (p_not (PFLe (PVar notation_y) (PConst 0%R))) p_true)
+            PFFalse)
+          (p_almost_sure (FProgBool notation_b)))
+        p_true.
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example probabilistic_le_notation_expansion :
+    [[ notation_y <= 1 ]] = PFLe (PVar notation_y) (PConst 1%R).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example probabilistic_lt_notation_expansion :
+    [[ notation_y < 1 ]] = p_lt (PVar notation_y) (PConst 1%R).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example probabilistic_eq_notation_expansion :
+    [[ notation_y = 1 ]] = p_eq (PVar notation_y) (PConst 1%R).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example probabilistic_ge_notation_expansion :
+    [[ notation_y >= 1 ]] = PFLe (PConst 1%R) (PVar notation_y).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example probabilistic_gt_notation_expansion :
+    [[ notation_y > 1 ]] = p_lt (PConst 1%R) (PVar notation_y).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example command_notation_expansion :
+    <{
+      notation_x := notation_X + 1;
+      notation_b b= notation_b -> notation_B;
+      notation_b toss $((1 / 2)%R);
+      notation_z sample uniform ( 0, 1 );
+      if notation_b then skip
+      else while notation_B do notation_x := 0 end
+      end
+    }> =
+      CSeq
+        (CRealAssign notation_x
+          (TAdd (TLogicVar notation_X) (TConst 1%R)))
+        (CSeq
+          (CBoolAssign notation_b
+            (FImpl (FProgBool notation_b) (FLogicBool notation_B)))
+          (CSeq
+            (CBoolToss notation_b (1 / 2)%R)
+            (CSeq
+              (CRealSample notation_z
+                (Uniform (TConst 0%R) (TConst 1%R)))
+              (CIf (FProgBool notation_b) CSkip
+                (CWhile (FLogicBool notation_B)
+                  (CRealAssign notation_x (TConst 0%R))))))).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Example hoare_triple_notation_skip :
+    {{ true }} <{ skip }> {{ true }}.
+  Proof.
+    apply HSkip.
+  Qed.
+End NotationChecks.
