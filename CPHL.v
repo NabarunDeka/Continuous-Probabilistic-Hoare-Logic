@@ -371,7 +371,7 @@ Lemma real_integral_zero :
   real_integral (fun _ : R => 0%R) = 0%R.
 Proof.
   transitivity (real_integral (fun x : R => 0 * (fun _ => 1) x)%R).
-  - apply real_integral_extensional; intro x; ring.
+  - apply real_integral_extensional; intro x; unfold Rdiv; ring.
   - rewrite real_integral_scale; ring.
 Qed.
 
@@ -470,6 +470,116 @@ Proof.
       (fun x => c * (real_indicator (a <= x < b)%R * f x))).
   - apply real_integral_extensional; intro x; ring.
   - apply real_integral_scale.
+Qed.
+
+(** The unit integral supplies the zero-rate case that is deliberately absent
+    from [real_integral_exp_between], whose closed form divides by the rate. *)
+Axiom real_integral_between_one :
+  forall a b : R,
+    (a <= b)%R ->
+    real_integral_between a b (fun _ : R => 1%R) = (b - a)%R.
+
+(** Singletons have zero mass.  Together with the half-open interval law
+    above, this lets clients use the closed support convention chosen by
+    [Uniform]. *)
+Axiom real_integral_singleton_zero :
+  forall (a : R) (f : R -> R),
+    real_integral
+      (fun x => real_indicator (x = a) * f x) = 0%R.
+
+Lemma real_integral_closed_between_one :
+  forall a b : R,
+    (a <= b)%R ->
+    real_integral
+      (fun x => real_indicator (a <= x /\ x <= b)%R) = (b - a)%R.
+Proof.
+  intros a b Hab.
+  transitivity
+    (real_integral
+      (fun x =>
+        real_indicator (a <= x < b)%R + real_indicator (x = b))).
+  - apply real_integral_extensional.
+    intro x.
+    destruct (Req_dec x b) as [Hxb | Hxb].
+    + subst x.
+      rewrite (real_indicator_true (a <= b /\ b <= b)%R) by lra.
+      rewrite (real_indicator_false (a <= b < b)%R) by lra.
+      rewrite (real_indicator_true (b = b)) by reflexivity.
+      ring.
+    + destruct (Rlt_dec x b) as [Hlt | Hnlt].
+      * destruct (Rle_dec a x) as [Hax | Hnax].
+        -- rewrite (real_indicator_true (a <= x /\ x <= b)%R) by lra.
+           rewrite (real_indicator_true (a <= x < b)%R) by lra.
+           rewrite (real_indicator_false (x = b)) by exact Hxb.
+           ring.
+        -- rewrite (real_indicator_false (a <= x /\ x <= b)%R) by lra.
+           rewrite (real_indicator_false (a <= x < b)%R) by lra.
+           rewrite (real_indicator_false (x = b)) by exact Hxb.
+           ring.
+      * rewrite (real_indicator_false (a <= x /\ x <= b)%R) by lra.
+        rewrite (real_indicator_false (a <= x < b)%R) by lra.
+        rewrite (real_indicator_false (x = b)) by exact Hxb.
+        ring.
+  - rewrite real_integral_add.
+    replace
+      (real_integral (fun x => real_indicator (a <= x < b)%R))
+      with (real_integral_between a b (fun _ : R => 1%R)).
+    2:{
+      unfold real_integral_between.
+      apply real_integral_extensional; intro x; ring.
+    }
+    replace
+      (real_integral (fun x => real_indicator (x = b))) with 0%R.
+    2:{
+      symmetry.
+      transitivity
+        (real_integral (fun x => real_indicator (x = b) * 1)).
+      - apply real_integral_extensional; intro x; ring.
+      - apply real_integral_singleton_zero.
+    }
+    rewrite (real_integral_between_one a b Hab).
+    ring.
+Qed.
+
+Lemma real_integral_uniform_density :
+  forall a b : R,
+    (a < b)%R ->
+    real_integral
+      (fun x => real_indicator (a <= x /\ x <= b)%R / (b - a)) = 1%R.
+Proof.
+  intros a b Hab.
+  transitivity
+    (real_integral
+      (fun x => (1 / (b - a)) * real_indicator (a <= x /\ x <= b)%R)).
+  - apply real_integral_extensional; intro x; unfold Rdiv; ring.
+  - rewrite real_integral_scale.
+    rewrite real_integral_closed_between_one by lra.
+    field; lra.
+Qed.
+
+(** Trusted geometric law for the unit-square quarter disk.  It follows the
+    nested integration order used by two sequential uniform samples. *)
+Axiom real_integral_unit_square_quarter_disk :
+  real_integral
+    (fun x =>
+      real_indicator (0 <= x /\ x <= 1)%R *
+      real_integral
+        (fun y =>
+          real_indicator (0 <= y /\ y <= 1)%R *
+          real_indicator (x * x + y * y <= 1)%R)) = (PI / 4)%R.
+
+Lemma real_integral_between_constant :
+  forall a b c : R,
+    (a <= b)%R ->
+    real_integral_between a b (fun _ : R => c) = (c * (b - a))%R.
+Proof.
+  intros a b c Hab.
+  transitivity
+    (real_integral_between a b (fun x : R => c * (fun _ => 1%R) x)).
+  - apply real_integral_extensional; intro x; ring.
+  - rewrite real_integral_between_scale.
+    rewrite (real_integral_between_one a b Hab).
+    reflexivity.
 Qed.
 
 Lemma real_integral_above_scale :
@@ -2017,6 +2127,13 @@ Inductive hoare_derivable : PFormula -> Cmd -> PFormula -> Prop :=
         hoare_derivable eta0 s eta1 ->
         hoare_derivable eta0 s eta2 ->
         hoare_derivable eta0 s (p_and eta1 eta2)
+  | HWhileNot :
+      forall (gamma beta : CFormula) (body : Cmd) (y : ProbLogicVar),
+        cformula_valid (FImpl gamma (c_not beta)) ->
+        hoare_derivable
+          (p_concentrated_mass gamma (PVar y))
+          (CWhile beta body)
+          (p_concentrated_mass gamma (PVar y))
   | HWhile :
       forall (m k : nat) (beta : CFormula) (body : Cmd) (q : PConstruct)
         (regions : nat -> CFormula) (solution exits : nat -> R)
@@ -2049,6 +2166,79 @@ Notation "{{ eta }} c {{ theta }}" := (hoare_derivable eta c theta)
    eta custom cphl_prob at level 99,
    c custom cphl_expr at level 99,
    theta custom cphl_prob at level 99) : cphl_hoare_scope.
+
+(** A convenient unit-mass consequence of the paper-shaped [HWhileNot]
+    constructor. *)
+Definition while_not_unit_mass : ProbLogicVar :=
+  prob_logic_var "__while_not_unit_mass".
+
+Lemma HWhileNot_unit :
+  forall (gamma beta : CFormula) (body : Cmd),
+    cformula_valid (FImpl gamma (c_not beta)) ->
+    hoare_derivable
+      (p_concentrated_mass gamma (PConst 1%R))
+      (CWhile beta body)
+      (p_concentrated_mass gamma (PConst 1%R)).
+Proof.
+  intros gamma beta body Houtside.
+  set (eta :=
+    p_concentrated_mass gamma (PVar while_not_unit_mass)).
+  set (rigid :=
+    p_eq (PVar while_not_unit_mass) (PConst 1%R)).
+  set (desired :=
+    p_concentrated_mass gamma (PConst 1%R)).
+  assert (Hraw :
+    hoare_derivable eta (CWhile beta body) eta).
+  {
+    unfold eta.
+    apply HWhileNot.
+    exact Houtside.
+  }
+  assert (Heta :
+    hoare_derivable (p_and eta rigid) (CWhile beta body) eta).
+  {
+    eapply HConseq with (eta1 := eta) (eta2 := eta).
+    - unfold pformula_valid.
+      intro ps; cbn [psatisfies p_and p_not]; tauto.
+    - exact Hraw.
+    - unfold pformula_valid.
+      intro ps; cbn [psatisfies]; tauto.
+  }
+  assert (Hrigid :
+    hoare_derivable (p_and eta rigid) (CWhile beta body) rigid).
+  {
+    eapply HConseq with (eta1 := rigid) (eta2 := rigid).
+    - unfold pformula_valid.
+      intro ps; cbn [psatisfies p_and p_not]; tauto.
+    - apply HFree.
+      unfold rigid.
+      cbn [p_eq p_and p_not pformula_analytical pterm_analytical].
+      tauto.
+    - unfold pformula_valid.
+      intro ps; cbn [psatisfies]; tauto.
+  }
+  change
+    (hoare_derivable
+      (subst_prob_pformula while_not_unit_mass (PConst 1%R) eta)
+      (CWhile beta body) desired).
+  eapply HElimv with
+    (eta1 := eta) (y := while_not_unit_mass) (p := PConst 1%R).
+  - eapply HConseq with
+      (eta1 := p_and eta rigid) (eta2 := p_and eta rigid).
+    + unfold pformula_valid.
+      intro ps; cbn [psatisfies]; tauto.
+    + apply HAnd; assumption.
+    + unfold pformula_valid, eta, rigid, desired,
+        p_concentrated_mass.
+      intro ps.
+      cbn [psatisfies p_and p_not p_eq pterm_eval].
+      nra.
+  - cbn [prob_logic_var_occurs_pterm]; tauto.
+  - unfold desired, p_concentrated_mass.
+    cbn [p_eq p_and p_not prob_logic_var_occurs_pformula
+      prob_logic_var_occurs_pterm].
+    tauto.
+Qed.
 
 (** Compilation checks for the Hoare rules. *)
 Section HoareRuleExamples.
