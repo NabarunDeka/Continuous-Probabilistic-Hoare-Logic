@@ -1,10 +1,8 @@
-(**
-  Continuous Probabilistic Hoare Logic (CPHL): classical-state syntax.
-
-  This file formalizes the classical fragment from [paper/cEPPL.tex].
-  It deliberately stops before the probabilistic assertion language and the
-  programming language.
-*)
+(** Continuous Probabilistic Hoare Logic: shared syntax, rules, measurable
+    states, concrete measures/integrals, and assertion semantics. Construct
+    bounds are proved in Soundness/ConstructFacts; capture-avoiding Boolean
+    substitution is justified in Soundness/BindingFacts. Command denotations,
+    including finite loop exits and their limit, are defined below. *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Strings.String.
@@ -13,8 +11,21 @@ From Stdlib Require Import Ascii.
 From Stdlib Require Import ClassicalDescription.
 From Stdlib Require Import Lra.
 From Stdlib Require Import Lia.
+From Stdlib Require Import FunctionalExtensionality.
 From Stdlib Require Import Lists.List.
 From Stdlib Require Import Arith.PeanoNat.
+
+(** Keep analytical notation inside modules so the shared syntax and examples
+    retain their Stdlib-facing real-number interface. *)
+Require AnalysisPrelude.
+Require MeasureIntegration.
+Require DistributionKernels.
+From HB Require Import structures.
+Import MeasureIntegration.
+From mathcomp Require boot order ssralg ssrnum boolp classical_sets.
+From mathcomp Require reals topology ereal measure measurable_realfun.
+From mathcomp Require lebesgue_measure lebesgue_stieltjes_measure Rstruct.
+From mathcomp Require functions normedtype sequences esum lebesgue_integral kernel Rstruct_topology.
 
 Open Scope R_scope.
 Open Scope string_scope.
@@ -61,7 +72,7 @@ Proof.
 Defined.
 
 (** A valuation assigns values to the four classes of variables in the paper.
-    Program execution will eventually update only the program-variable fields. *)
+    Program execution updates only the program-variable fields. *)
 Record valuation : Type := {
   real_program_values : RealProgramVar -> R;
   bool_program_values : BoolProgramVar -> bool;
@@ -134,6 +145,119 @@ Proof.
   split; intro H; exact H.
 Qed.
 
+(** Commands need a Boolean truth value for a classical guard. This merely
+    reifies [satisfies]; it does not change the existing logical semantics. *)
+Definition cformula_eval_bool (gamma : CFormula) (v : state) : bool :=
+  if excluded_middle_informative (satisfies v gamma) then true else false.
+
+Module ValuationSpace.
+
+(** Keep analytical notation local to this module. The measurable carrier
+    below is definitionally the existing four-map valuation record. *)
+Import boot order ssralg ssrnum boolp classical_sets.
+Import reals topology measure lebesgue_stieltjes_measure Rstruct.
+Import numFieldTopology.Exports MeasurableR.
+Local Notation real := [the realType of (Rdefinitions.R : Type)].
+Local Open Scope classical_set_scope.
+
+Definition RawValuation := {classic valuation}.
+Definition RealCoordinate := (RealProgramVar + RealLogicVar)%type.
+Definition BoolCoordinate := (BoolProgramVar + BoolLogicVar)%type.
+
+Definition real_coordinate (i : RealCoordinate) (v : RawValuation) : real :=
+  match i with
+  | inl x => real_program_values v x
+  | inr x => real_logic_values v x
+  end.
+
+Definition bool_coordinate (i : BoolCoordinate) (v : RawValuation) : bool :=
+  match i with
+  | inl b => bool_program_values v b
+  | inr b => bool_logic_values v b
+  end.
+
+(** Generate the smallest sigma-algebra making every coordinate measurable:
+    Borel events for reals and all events for Booleans. Logic coordinates
+    remain part of the joint state; no independence or fixed value is imposed. *)
+Definition valuation_generators : set_system RawValuation :=
+  [set A | (exists i (U : set real), measurable U /\
+                       A = real_coordinate i @^-1` U) \/
+           (exists i (U : set bool), measurable U /\
+                       A = bool_coordinate i @^-1` U)].
+
+Definition Valuation := g_sigma_algebraType valuation_generators.
+
+(** Giving formula events this carrier makes their sigma-algebra explicit.
+    This does not assert that arbitrary [Assertion] predicates are measurable. *)
+Definition formula_event (gamma : CFormula) : set Valuation :=
+  formula_assertion gamma.
+
+(** These foundational facts precede integration to avoid importing
+    Soundness/StateSpace back into the shared semantic definitions. *)
+Import measurable_realfun.
+Local Open Scope ring_scope.
+
+Lemma measurable_real_coordinate i :
+  measurable_fun [set: Valuation] (real_coordinate i).
+Proof.
+move=> _ U mU; rewrite setTI; apply: sub_sigma_algebra.
+by left; exists i, U.
+Qed.
+
+Lemma measurable_bool_coordinate i :
+  measurable_fun [set: Valuation] (bool_coordinate i).
+Proof.
+move=> _ U mU; rewrite setTI; apply: sub_sigma_algebra.
+by right; exists i, U.
+Qed.
+
+Lemma measurable_term (t : Term) :
+  @measurable_fun _ _ [the measurableType _ of Valuation]
+    [the measurableType _ of (real : Type)] setT (term_eval t).
+Proof.
+elim: t => [x|x|r|t1 m1 t2 m2|t1 m1 t2 m2] /=.
+- exact: measurable_real_coordinate (inl x).
+- exact: measurable_real_coordinate (inr x).
+- exact: measurable_cst.
+- exact: measurable_funD.
+- exact: measurable_funM.
+Qed.
+
+Lemma measurable_bool_true (f : Valuation -> bool) :
+  measurable_fun setT f -> measurable (f @^-1` [set true]).
+Proof.
+move=> mf; rewrite -[f @^-1` _]setTI.
+exact: mf measurableT [set true] I.
+Qed.
+
+Lemma measurable_formula_event gamma : measurable (formula_event gamma).
+Proof.
+elim: gamma => [b|b|t1 t2| |g1 m1 g2 m2].
+- exact: measurable_bool_true _ (measurable_bool_coordinate (inl b)).
+- exact: measurable_bool_true _ (measurable_bool_coordinate (inr b)).
+- have -> : formula_event (FLe t1 t2) =
+      (fun v : Valuation => (term_eval t1 v <= term_eval t2 v)%R)
+        @^-1` [set true].
+    apply functional_extensionality; intro v.
+    apply propext.
+    change (Rle (term_eval t1 v) (term_eval t2 v) <->
+            (term_eval t1 v <= term_eval t2 v)%R = true).
+    by split=> [/RleP|/RleP].
+  apply: measurable_bool_true.
+  exact: measurable_fun_ler (measurable_term t1) (measurable_term t2).
+- exact: measurable0.
+- have -> : formula_event (FImpl g1 g2) =
+      (~` formula_event g1) `|` formula_event g2.
+    apply functional_extensionality; intro v.
+    apply propext.
+    change ((satisfies v g1 -> satisfies v g2) <->
+            (~ satisfies v g1 \/ satisfies v g2)).
+    destruct (Classical_Prop.classic (satisfies v g1)); tauto.
+  exact: measurableU (measurableC m1) m2.
+Qed.
+
+End ValuationSpace.
+
 (** Compilation checks for the syntax and semantics above. *)
 Definition demo_real_program_var : RealProgramVar :=
   real_program_var "x".
@@ -203,36 +327,69 @@ Proof.
   tauto.
 Qed.
 
-(** Probabilistic states are modeled abstractly.  [measure_of] may be applied
-    to every semantic classical assertion, while the axioms below constrain
-    the opaque inhabitants of [Measure] to behave like sub-probability
-    measures. *)
-Parameter Measure : Type.
+(** Concrete countably additive measures over the joint valuation space.
+    [Subprob] remains separate: Pstate carries no admissibility proof. *)
+Module StateMeasure.
+Import boot order ssralg ssrnum boolp classical_sets.
+Import reals topology measure lebesgue_stieltjes_measure Rstruct.
+Import ValuationSpace.
+Local Open Scope classical_set_scope.
+Definition Space := [the measurableType _ of Valuation].
+Definition carrier : Type := @ConcreteMeasure.measure _ Space.
+Definition measurable_event (A : Assertion) : Prop :=
+  @measurable _ Valuation A.
 
-Parameter measure_of : Measure -> Assertion -> R.
+(** Finite real event masses inherit additivity only on measurable events. *)
+Lemma additive (mu : carrier) A B : ConcreteMeasure.Finite mu ->
+  measurable_event A -> measurable_event B ->
+  (forall v, ~ (A v /\ B v)) ->
+  ConcreteMeasure.event_mass mu (fun v => A v \/ B v) =
+    (ConcreteMeasure.event_mass mu A + ConcreteMeasure.event_mass mu B)%R.
+Proof.
+move=> hm mA mB h; apply: ConcreteMeasure.event_additive => //.
+apply functional_extensionality => v; apply propext.
+split => [hv|hf]; [exact: (h v hv) | contradiction].
+Qed.
+End StateMeasure.
 
-Axiom measure_empty :
-  forall mu : Measure,
-    measure_of mu (fun _ : state => False) = 0%R.
+Definition Measure : Type := StateMeasure.carrier.
+Definition Subprob : Measure -> Prop := ConcreteMeasure.Subprob.
+Definition FiniteMeasure : Measure -> Prop := ConcreteMeasure.Finite.
+Definition measurable_assertion := StateMeasure.measurable_event.
+Definition measure_of : Measure -> Assertion -> R := ConcreteMeasure.event_mass.
 
-Axiom measure_extensional :
-  forall (mu : Measure) (A B : Assertion),
-    (forall v : state, A v <-> B v) ->
-    measure_of mu A = measure_of mu B.
+Lemma measure_additive : forall (mu : Measure) (A B : Assertion),
+  FiniteMeasure mu -> measurable_assertion A -> measurable_assertion B ->
+  (forall v : state, ~ (A v /\ B v)) ->
+  measure_of mu (fun v : state => A v \/ B v) =
+    (measure_of mu A + measure_of mu B)%R.
+Proof. exact StateMeasure.additive. Qed.
 
-Axiom measure_additive :
-  forall (mu : Measure) (A B : Assertion),
-    (forall v : state, ~ (A v /\ B v)) ->
-    measure_of mu (fun v : state => A v \/ B v) =
-      (measure_of mu A + measure_of mu B)%R.
+Lemma measure_empty : forall mu : Measure,
+  measure_of mu (fun _ : state => False) = 0%R.
+Proof. intro mu; apply ConcreteMeasure.event_empty. Qed.
 
-Axiom measure_nonnegative :
-  forall (mu : Measure) (A : Assertion),
-    (0 <= measure_of mu A)%R.
+Lemma measure_extensional : forall (mu : Measure) (A B : Assertion),
+  (forall v : state, A v <-> B v) -> measure_of mu A = measure_of mu B.
+Proof.
+  intros mu A B h; assert (A = B) as ->.
+  { apply functional_extensionality; intro v; apply boolp.propext; apply h. }
+  reflexivity.
+Qed.
 
-Axiom measure_subprobability :
-  forall mu : Measure,
-    (measure_of mu (fun _ : state => True) <= 1)%R.
+Lemma measure_nonnegative : forall (mu : Measure) (A : Assertion),
+  (0 <= measure_of mu A)%R.
+Proof.
+  intros mu A; exact (ssrbool.elimT Rstruct.RleP
+    (ConcreteMeasure.event_nonnegative mu A)).
+Qed.
+
+Lemma measure_subprobability : forall mu : Measure, Subprob mu ->
+  (measure_of mu (fun _ : state => True) <= 1)%R.
+Proof.
+  intros mu hm; exact (ssrbool.elimT Rstruct.RleP
+    (ConcreteMeasure.mass_bound hm)).
+Qed.
 
 (** Probabilistic logic variables are rigid real-valued variables in the
     probabilistic layer. *)
@@ -249,6 +406,11 @@ Record Pstate : Type := {
   pstate_measure : Measure;
   pstate_prob_logic_values : ProbLogicVar -> R
 }.
+
+(** Admissibility constrains only the measure. The external probabilistic
+    assignment is arbitrary, and no proof is stored in the state itself. *)
+Definition pstate_admissible (ps : Pstate) : Prop :=
+  Subprob (pstate_measure ps).
 
 (** The continuous distributions supported by the assertion language.  Their
     parameters are state-dependent real terms. *)
@@ -326,6 +488,106 @@ Definition distribution_density (d : Distribution) (v : state) (z : R) : R :=
           (2 * deviation_value * deviation_value))
   end.
 
+(** Parameter expressions are evaluated in the incoming joint valuation.
+    These kernels return sampled values; CommandSemantics applies their updates. *)
+Module DistributionSemantics.
+Import boot order ssralg ssrnum boolp classical_sets functions.
+Import reals topology ereal measure measurable_realfun kernel Rstruct.
+Import lebesgue_stieltjes_measure.
+Import numFieldTopology.Exports MeasurableR.
+Import Order.TTheory GRing.Theory Num.Theory.
+Import ValuationSpace DistributionKernels.
+Local Notation real := [the realType of (Rdefinitions.R : Type)].
+Local Open Scope classical_set_scope.
+Local Open Scope ring_scope.
+Local Open Scope ereal_scope.
+
+Definition validb (d : CPHL.Distribution) (v : Valuation) : bool :=
+  match d with
+  | CPHL.Uniform a b => (term_eval a v < term_eval b v)%R
+  | CPHL.Laplace _ s | CPHL.Gaussian _ s => (0 < term_eval s v)%R
+  end.
+
+Lemma validbP d v : reflect (distribution_valid d v) (validb d v).
+Proof. case: d => a b; exact: RltP. Qed.
+
+Lemma validb_measurable d : measurable_fun [set: Valuation] (validb d).
+Proof.
+case: d => a b; apply: measurable_fun_ltr => //; exact: measurable_term.
+Qed.
+
+Definition real_law (d : CPHL.Distribution) (v : Valuation) :
+    {measure set real -> \bar real} :=
+  match d with
+  | CPHL.Uniform a b => DistributionLaws.uniform (term_eval a v, term_eval b v)
+  | CPHL.Laplace m s => DistributionLaws.laplace (term_eval m v, term_eval s v)
+  | CPHL.Gaussian m s => DistributionLaws.gaussian (term_eval m v, term_eval s v)
+  end.
+
+Lemma real_law_measurable d A : measurable A ->
+  measurable_fun [set: Valuation] (real_law d ^~ A).
+Proof.
+move=> mA.
+have mp a b : @measurable_fun _ _ [the measurableType _ of Valuation]
+    [the measurableType _ of (real * real)%type] setT
+    (fun v => (term_eval a v, term_eval b v)).
+  apply: measurable_fun_pair; exact: measurable_term.
+case: d => a b.
+- exact: measurableT_comp (measurable_kernel DistributionLaws.uniform A mA) (mp a b).
+- exact: measurableT_comp (measurable_kernel DistributionLaws.laplace A mA) (mp a b).
+- exact: measurableT_comp (measurable_kernel DistributionLaws.gaussian A mA) (mp a b).
+Qed.
+
+HB.instance Definition _ d := isKernel.Build _ _ _ _ _
+  (real_law d) (real_law_measurable d).
+
+Lemma real_law_mass d v : real_law d v setT = if validb d v then 1 else 0.
+Proof.
+case: d => a b; rewrite /real_law /validb;
+  exact: DistributionLaws.parameter_measure_mass.
+Qed.
+
+Lemma real_law_subprob d :
+  ereal_sup [set real_law d v setT | v in [set: Valuation]] <= 1.
+Proof.
+apply: ge_ereal_sup => _ [v _ <-]; rewrite real_law_mass.
+by case: (validb d v); [exact: lexx | exact: lee01].
+Qed.
+
+HB.instance Definition _ d := Kernel_isSubProbability.Build _ _ _ _ _
+  (real_law d) (real_law_subprob d).
+
+(** Toss includes both endpoint probabilities and rejects values outside
+    [0,1]; it also leaves the incoming valuation untouched. *)
+Definition bool_law (t : Term) (v : Valuation) :
+    {measure set bool -> \bar real} := DistributionLaws.toss (term_eval t v).
+
+Lemma bool_law_measurable t A : measurable A ->
+  measurable_fun [set: Valuation] (bool_law t ^~ A).
+Proof.
+move=> mA; exact: measurableT_comp
+  (@DistributionLaws.toss_measurable A mA) (measurable_term t).
+Qed.
+
+HB.instance Definition _ t := isKernel.Build _ _ _ _ _
+  (bool_law t) (bool_law_measurable t).
+
+Lemma bool_law_subprob t :
+  ereal_sup [set bool_law t v setT | v in [set: Valuation]] <= 1.
+Proof.
+apply: ge_ereal_sup => _ [v _ <-]; rewrite /bool_law DistributionLaws.toss_mass.
+by case: (DistributionLaws.toss_valid (term_eval t v));
+  [exact: lexx | exact: lee01].
+Qed.
+
+HB.instance Definition _ t := Kernel_isSubProbability.Build _ _ _ _ _
+  (bool_law t) (bool_law_subprob t).
+End DistributionSemantics.
+
+Definition distribution_measure := DistributionSemantics.real_law.
+Definition distribution_validb := DistributionSemantics.validb.
+Definition toss_measure := DistributionSemantics.bool_law.
+
 (** Point update for the real-valued program-variable component of a state.
     It supports the nameless integral binder below. *)
 Definition update_real_values
@@ -339,6 +601,19 @@ Definition update_real (v : state) (x : RealProgramVar) (r : R) : state :=
      real_logic_values := real_logic_values v;
      bool_logic_values := bool_logic_values v |}.
 
+(** Boolean assignment updates only its program coordinate, preserving both
+    classical logic maps and every real-valued coordinate. *)
+Definition update_bool_values
+  (values : BoolProgramVar -> bool) (b : BoolProgramVar) (value : bool) :
+  BoolProgramVar -> bool :=
+  fun c => if bool_program_var_eq_dec c b then value else values c.
+
+Definition update_bool (v : state) (b : BoolProgramVar) (value : bool) : state :=
+  {| real_program_values := real_program_values v;
+     bool_program_values := update_bool_values (bool_program_values v) b value;
+     real_logic_values := real_logic_values v;
+     bool_logic_values := bool_logic_values v |}.
+
 (** Probability constructs.  [QIntegral x d q] denotes the paper's
     [integral q^x_k f(k) dk]; the displayed variable [k] is nameless here and
     hence alpha-equivalent choices have the same representation. *)
@@ -346,730 +621,128 @@ Inductive PConstruct : Type :=
   | QIndicator (gamma : CFormula)
   | QIntegral (x : RealProgramVar) (d : Distribution) (q : PConstruct).
 
-(** The real integral and expectation are abstract at this stage. *)
-Parameter real_integral : (R -> R) -> R.
+(** Real Lebesgue integration on the library's Borel real line. The
+    total real projection sends infinities to zero; algebraic use therefore
+    requires integrability, and limits use the extended integral instead. *)
+Module RealIntegration.
+Import boot order ssralg ssrnum reals topology ereal classical_sets.
+Import measure lebesgue_measure Rstruct.
+Import numFieldTopology.Exports MeasurableR.
+Local Notation real := [the realType of (Rdefinitions.R : Type)].
+Local Open Scope classical_set_scope.
+Local Open Scope ring_scope.
+Definition Space := [the measurableType _ of (real : Type)].
+Definition lebesgue : {measure set real -> \bar real} := lebesgue_measure.
+End RealIntegration.
 
-(** The abstract integral is equipped with the algebraic laws used by
-    continuous-program calculations.  The operator remains total, as in the
-    paper's assertion semantics; these axioms record the trusted analytical
-    boundary rather than choosing a concrete integration library. *)
-Axiom real_integral_extensional :
-  forall f g : R -> R,
-    (forall x : R, f x = g x) ->
-    real_integral f = real_integral g.
+Definition real_integral : (R -> R) -> R :=
+  @ConcreteMeasure.expectation _ RealIntegration.Space RealIntegration.lebesgue.
+Definition real_integrable : (R -> R) -> Prop :=
+  @ConcreteMeasure.Integrable _ RealIntegration.Space RealIntegration.lebesgue.
 
-Axiom real_integral_add :
-  forall f g : R -> R,
-    real_integral (fun x => f x + g x) =
-      (real_integral f + real_integral g)%R.
+Lemma real_integral_extensional : forall f g : R -> R,
+  (forall x : R, f x = g x) -> real_integral f = real_integral g.
+Proof. exact (@ConcreteMeasure.expectation_ext _ RealIntegration.Space RealIntegration.lebesgue). Qed.
 
-Axiom real_integral_scale :
-  forall (c : R) (f : R -> R),
-    real_integral (fun x => c * f x) = (c * real_integral f)%R.
+Lemma real_integral_add : forall f g : R -> R,
+  real_integrable f -> real_integrable g ->
+  real_integral (fun x => f x + g x) = (real_integral f + real_integral g)%R.
+Proof. exact (@ConcreteMeasure.expectation_add _ RealIntegration.Space RealIntegration.lebesgue). Qed.
 
-Lemma real_integral_zero :
-  real_integral (fun _ : R => 0%R) = 0%R.
-Proof.
-  transitivity (real_integral (fun x : R => 0 * (fun _ => 1) x)%R).
-  - apply real_integral_extensional; intro x; unfold Rdiv; ring.
-  - rewrite real_integral_scale; ring.
-Qed.
+Lemma real_integral_scale : forall (c : R) (f : R -> R),
+  real_integrable f ->
+  real_integral (fun x => c * f x) = (c * real_integral f)%R.
+Proof. exact (@ConcreteMeasure.expectation_scale _ RealIntegration.Space RealIntegration.lebesgue). Qed.
 
-Lemma real_integral_scale_right :
-  forall (c : R) (f : R -> R),
-    real_integral (fun x => f x * c) = (real_integral f * c)%R.
-Proof.
-  intros c f.
-  transitivity (real_integral (fun x => c * f x)).
-  - apply real_integral_extensional; intro x; ring.
-  - rewrite real_integral_scale; ring.
-Qed.
+Lemma real_integral_zero : real_integral (fun _ : R => 0%R) = 0%R.
+Proof. exact (@ConcreteMeasure.expectation_zero _ RealIntegration.Space RealIntegration.lebesgue). Qed.
 
-(** Half-open regions form a disjoint partition of the real line and avoid
-    requiring a separate zero-mass-at-an-endpoint axiom. *)
+(** Half-open regions are disjoint; no normalization is built into a region. *)
 Definition real_integral_below (a : R) (f : R -> R) : R :=
   real_integral (fun x => real_indicator (x < a)%R * f x).
-
 Definition real_integral_between (a b : R) (f : R -> R) : R :=
-  real_integral
-    (fun x => real_indicator (a <= x < b)%R * f x).
-
+  real_integral (fun x => real_indicator (a <= x < b)%R * f x).
 Definition real_integral_above (a : R) (f : R -> R) : R :=
   real_integral (fun x => real_indicator (a <= x)%R * f x).
 
-Lemma real_integral_below_add :
-  forall (a : R) (f g : R -> R),
-    real_integral_below a (fun x => f x + g x) =
-      (real_integral_below a f + real_integral_below a g)%R.
-Proof.
-  intros a f g.
-  unfold real_integral_below.
-  transitivity
-    (real_integral
-      (fun x =>
-        real_indicator (x < a)%R * f x +
-        real_indicator (x < a)%R * g x)).
-  - apply real_integral_extensional; intro x; ring.
-  - apply real_integral_add.
-Qed.
-
-Lemma real_integral_between_add :
-  forall (a b : R) (f g : R -> R),
-    real_integral_between a b (fun x => f x + g x) =
-      (real_integral_between a b f + real_integral_between a b g)%R.
-Proof.
-  intros a b f g.
-  unfold real_integral_between.
-  transitivity
-    (real_integral
-      (fun x =>
-        real_indicator (a <= x < b)%R * f x +
-        real_indicator (a <= x < b)%R * g x)).
-  - apply real_integral_extensional; intro x; ring.
-  - apply real_integral_add.
-Qed.
-
-Lemma real_integral_above_add :
-  forall (a : R) (f g : R -> R),
-    real_integral_above a (fun x => f x + g x) =
-      (real_integral_above a f + real_integral_above a g)%R.
-Proof.
-  intros a f g.
-  unfold real_integral_above.
-  transitivity
-    (real_integral
-      (fun x =>
-        real_indicator (a <= x)%R * f x +
-        real_indicator (a <= x)%R * g x)).
-  - apply real_integral_extensional; intro x; ring.
-  - apply real_integral_add.
-Qed.
-
-Lemma real_integral_below_scale :
-  forall (a c : R) (f : R -> R),
-    real_integral_below a (fun x => c * f x) =
-      (c * real_integral_below a f)%R.
-Proof.
-  intros a c f.
-  unfold real_integral_below.
-  transitivity
-    (real_integral (fun x => c * (real_indicator (x < a)%R * f x))).
-  - apply real_integral_extensional; intro x; ring.
-  - apply real_integral_scale.
-Qed.
-
-Lemma real_integral_between_scale :
-  forall (a b c : R) (f : R -> R),
-    real_integral_between a b (fun x => c * f x) =
-      (c * real_integral_between a b f)%R.
-Proof.
-  intros a b c f.
-  unfold real_integral_between.
-  transitivity
-    (real_integral
-      (fun x => c * (real_indicator (a <= x < b)%R * f x))).
-  - apply real_integral_extensional; intro x; ring.
-  - apply real_integral_scale.
-Qed.
-
-(** The unit integral supplies the zero-rate case that is deliberately absent
-    from [real_integral_exp_between], whose closed form divides by the rate. *)
-Axiom real_integral_between_one :
-  forall a b : R,
-    (a <= b)%R ->
-    real_integral_between a b (fun _ : R => 1%R) = (b - a)%R.
-
-(** Singletons have zero mass.  Together with the half-open interval law
-    above, this lets clients use the closed support convention chosen by
-    [Uniform]. *)
-Axiom real_integral_singleton_zero :
-  forall (a : R) (f : R -> R),
-    real_integral
-      (fun x => real_indicator (x = a) * f x) = 0%R.
-
-Lemma real_integral_closed_between_one :
-  forall a b : R,
-    (a <= b)%R ->
-    real_integral
-      (fun x => real_indicator (a <= x /\ x <= b)%R) = (b - a)%R.
-Proof.
-  intros a b Hab.
-  transitivity
-    (real_integral
-      (fun x =>
-        real_indicator (a <= x < b)%R + real_indicator (x = b))).
-  - apply real_integral_extensional.
-    intro x.
-    destruct (Req_dec x b) as [Hxb | Hxb].
-    + subst x.
-      rewrite (real_indicator_true (a <= b /\ b <= b)%R) by lra.
-      rewrite (real_indicator_false (a <= b < b)%R) by lra.
-      rewrite (real_indicator_true (b = b)) by reflexivity.
-      ring.
-    + destruct (Rlt_dec x b) as [Hlt | Hnlt].
-      * destruct (Rle_dec a x) as [Hax | Hnax].
-        -- rewrite (real_indicator_true (a <= x /\ x <= b)%R) by lra.
-           rewrite (real_indicator_true (a <= x < b)%R) by lra.
-           rewrite (real_indicator_false (x = b)) by exact Hxb.
-           ring.
-        -- rewrite (real_indicator_false (a <= x /\ x <= b)%R) by lra.
-           rewrite (real_indicator_false (a <= x < b)%R) by lra.
-           rewrite (real_indicator_false (x = b)) by exact Hxb.
-           ring.
-      * rewrite (real_indicator_false (a <= x /\ x <= b)%R) by lra.
-        rewrite (real_indicator_false (a <= x < b)%R) by lra.
-        rewrite (real_indicator_false (x = b)) by exact Hxb.
-        ring.
-  - rewrite real_integral_add.
-    replace
-      (real_integral (fun x => real_indicator (a <= x < b)%R))
-      with (real_integral_between a b (fun _ : R => 1%R)).
-    2:{
-      unfold real_integral_between.
-      apply real_integral_extensional; intro x; ring.
-    }
-    replace
-      (real_integral (fun x => real_indicator (x = b))) with 0%R.
-    2:{
-      symmetry.
-      transitivity
-        (real_integral (fun x => real_indicator (x = b) * 1)).
-      - apply real_integral_extensional; intro x; ring.
-      - apply real_integral_singleton_zero.
-    }
-    rewrite (real_integral_between_one a b Hab).
-    ring.
-Qed.
-
-Lemma real_integral_uniform_density :
-  forall a b : R,
-    (a < b)%R ->
-    real_integral
-      (fun x => real_indicator (a <= x /\ x <= b)%R / (b - a)) = 1%R.
-Proof.
-  intros a b Hab.
-  transitivity
-    (real_integral
-      (fun x => (1 / (b - a)) * real_indicator (a <= x /\ x <= b)%R)).
-  - apply real_integral_extensional; intro x; unfold Rdiv; ring.
-  - rewrite real_integral_scale.
-    rewrite real_integral_closed_between_one by lra.
-    field; lra.
-Qed.
-
-(** Trusted geometric law for the unit-square quarter disk.  It follows the
-    nested integration order used by two sequential uniform samples. *)
-Axiom real_integral_unit_square_quarter_disk :
-  real_integral
-    (fun x =>
-      real_indicator (0 <= x /\ x <= 1)%R *
-      real_integral
-        (fun y =>
-          real_indicator (0 <= y /\ y <= 1)%R *
-          real_indicator (x * x + y * y <= 1)%R)) = (PI / 4)%R.
-
-Lemma real_integral_between_constant :
-  forall a b c : R,
-    (a <= b)%R ->
-    real_integral_between a b (fun _ : R => c) = (c * (b - a))%R.
-Proof.
-  intros a b c Hab.
-  transitivity
-    (real_integral_between a b (fun x : R => c * (fun _ => 1%R) x)).
-  - apply real_integral_extensional; intro x; ring.
-  - rewrite real_integral_between_scale.
-    rewrite (real_integral_between_one a b Hab).
-    reflexivity.
-Qed.
-
-Lemma real_integral_above_scale :
-  forall (a c : R) (f : R -> R),
-    real_integral_above a (fun x => c * f x) =
-      (c * real_integral_above a f)%R.
-Proof.
-  intros a c f.
-  unfold real_integral_above.
-  transitivity
-    (real_integral (fun x => c * (real_indicator (a <= x)%R * f x))).
-  - apply real_integral_extensional; intro x; ring.
-  - apply real_integral_scale.
-Qed.
-
-Lemma real_integral_split_three :
-  forall (f : R -> R) (a b : R),
-    (a <= b)%R ->
-    real_integral f =
-      (real_integral_below a f +
-       real_integral_between a b f +
-       real_integral_above b f)%R.
-Proof.
-  intros f a b Hab.
-  unfold real_integral_below, real_integral_between,
-    real_integral_above.
-  transitivity
-    (real_integral
-      (fun x =>
-        real_indicator (x < a)%R * f x +
-        (real_indicator (a <= x < b)%R * f x +
-         real_indicator (b <= x)%R * f x))).
-  - apply real_integral_extensional.
-    intro x.
-    destruct (Rlt_dec x a) as [Hxa | Hnxa].
-    + rewrite (real_indicator_true _ Hxa).
-      rewrite (real_indicator_false (a <= x < b)%R) by lra.
-      rewrite (real_indicator_false (b <= x)%R) by lra.
-      ring.
-    + destruct (Rlt_dec x b) as [Hxb | Hnxb].
-      * rewrite (real_indicator_false (x < a)%R) by lra.
-        rewrite (real_indicator_true (a <= x < b)%R) by lra.
-        rewrite (real_indicator_false (b <= x)%R) by lra.
-        ring.
-      * rewrite (real_indicator_false (x < a)%R) by lra.
-        rewrite (real_indicator_false (a <= x < b)%R) by lra.
-        rewrite (real_indicator_true (b <= x)%R) by lra.
-        ring.
-  - rewrite real_integral_add, real_integral_add.
-    ring.
-Qed.
-
-(** Closed forms for the exponential functions needed below. *)
-Axiom real_integral_exp_below :
-  forall a k : R,
-    (0 < k)%R ->
-    real_integral_below a (fun x => exp (k * x)) =
-      (exp (k * a) / k)%R.
-
-Axiom real_integral_exp_between :
-  forall a b k : R,
-    (a <= b)%R ->
-    k <> 0%R ->
-    real_integral_between a b (fun x => exp (k * x)) =
-      ((exp (k * b) - exp (k * a)) / k)%R.
-
-Axiom real_integral_exp_above :
-  forall a k : R,
-    (k < 0)%R ->
-    real_integral_above a (fun x => exp (k * x)) =
-      (- exp (k * a) / k)%R.
-
-(** The usual Laplace CDF, using the same [(location, scale)] convention as
-    [Laplace] and [distribution_density]. *)
-Definition laplace_cdf (location scale cutoff : R) : R :=
-  if Rle_dec cutoff location
-  then ((1 / 2) * exp ((cutoff - location) / scale))%R
-  else (1 - (1 / 2) * exp (- (cutoff - location) / scale))%R.
-
-(** Reusable closed forms derived from the exponential-region laws above.
-    They are stated at the raw density level so later examples need not expose
-    [Distribution] or a program state. *)
-Lemma laplace_integral_left_below :
-  forall location scale cutoff : R,
-    (0 < scale)%R ->
-    (cutoff <= location)%R ->
-    real_integral_below cutoff
-      (fun z =>
-        (1 / (2 * scale)) *
-          exp (- Rabs (z - location) / scale)) =
-      ((1 / 2) * exp ((cutoff - location) / scale))%R.
-Proof.
-  intros location scale cutoff Hscale Hcutoff.
-  transitivity
-    (real_integral_below cutoff
-      (fun z =>
-        ((1 / (2 * scale)) * exp (- location / scale)) *
-          exp ((1 / scale) * z))).
-  - unfold real_integral_below.
-    apply real_integral_extensional.
-    intro z.
-    destruct (Rlt_dec z cutoff) as [Hz | Hnz].
-    + rewrite (real_indicator_true _ Hz).
-      rewrite (Rabs_left (z - location)) by lra.
-      assert (Hexp :
-        (exp (- - (z - location) / scale) =
-          exp (- location / scale) * exp ((1 / scale) * z))%R).
-      {
-        rewrite <- exp_plus.
-        f_equal; field; lra.
-      }
-      rewrite Hexp; ring.
-    + rewrite (real_indicator_false (z < cutoff)%R) by exact Hnz.
-      ring.
-  - rewrite real_integral_below_scale.
-    rewrite (real_integral_exp_below cutoff (1 / scale)).
-    + assert (Hexp :
-        (exp (- location / scale) * exp ((1 / scale) * cutoff) =
-          exp ((cutoff - location) / scale))%R).
-      {
-        rewrite <- exp_plus.
-        f_equal; field; lra.
-      }
-      rewrite <- Hexp.
-      field; lra.
-    + apply Rdiv_lt_0_compat; lra.
-Qed.
-
-Lemma laplace_integral_right_between :
-  forall location scale cutoff : R,
-    (0 < scale)%R ->
-    (location <= cutoff)%R ->
-    real_integral_between location cutoff
-      (fun z =>
-        (1 / (2 * scale)) *
-          exp (- Rabs (z - location) / scale)) =
-      ((1 / 2) *
-        (1 - exp (- (cutoff - location) / scale)))%R.
-Proof.
-  intros location scale cutoff Hscale Hcutoff.
-  transitivity
-    (real_integral_between location cutoff
-      (fun z =>
-        ((1 / (2 * scale)) * exp (location / scale)) *
-          exp ((- 1 / scale) * z))).
-  - unfold real_integral_between.
-    apply real_integral_extensional.
-    intro z.
-    destruct (excluded_middle_informative (location <= z < cutoff)%R)
-      as [Hz | Hnz].
-    + rewrite (real_indicator_true _ Hz).
-      rewrite (Rabs_right (z - location)) by lra.
-      assert (Hexp :
-        (exp (- (z - location) / scale) =
-          exp (location / scale) * exp ((- 1 / scale) * z))%R).
-      {
-        rewrite <- exp_plus.
-        f_equal; field; lra.
-      }
-      rewrite Hexp; ring.
-    + rewrite (real_indicator_false (location <= z < cutoff)%R) by
-        exact Hnz.
-      ring.
-  - rewrite real_integral_between_scale.
-    rewrite (real_integral_exp_between location cutoff (- 1 / scale)).
-    2: exact Hcutoff.
-    2: unfold Rdiv; apply Rmult_integral_contrapositive_currified;
-       [lra | apply Rinv_neq_0_compat; lra].
-    assert (Hexp_cutoff :
-      (exp (location / scale) * exp ((- 1 / scale) * cutoff) =
-        exp (- (cutoff - location) / scale))%R).
-    {
-      rewrite <- exp_plus.
-      f_equal; field; lra.
-    }
-    assert (Hexp_location :
-      (exp (location / scale) * exp ((- 1 / scale) * location) = 1)%R).
-    {
-      rewrite <- exp_plus.
-      replace (location / scale + -1 / scale * location)%R with 0%R by
-        (field; lra).
-      apply exp_0.
-    }
-    transitivity
-      (((1 / (2 * scale)) *
-        (exp (location / scale) * exp ((- 1 / scale) * cutoff) -
-         exp (location / scale) * exp ((- 1 / scale) * location))) /
-        (- 1 / scale))%R.
-    + field; lra.
-    + rewrite Hexp_cutoff, Hexp_location.
-      field; lra.
-Qed.
-
-Lemma laplace_integral_left_between :
-  forall location scale cutoff : R,
-    (0 < scale)%R ->
-    (cutoff <= location)%R ->
-    real_integral_between cutoff location
-      (fun z =>
-        (1 / (2 * scale)) *
-          exp (- Rabs (z - location) / scale)) =
-      ((1 / 2) *
-        (1 - exp ((cutoff - location) / scale)))%R.
-Proof.
-  intros location scale cutoff Hscale Hcutoff.
-  transitivity
-    (real_integral_between cutoff location
-      (fun z =>
-        ((1 / (2 * scale)) * exp (- location / scale)) *
-          exp ((1 / scale) * z))).
-  - unfold real_integral_between.
-    apply real_integral_extensional.
-    intro z.
-    destruct (excluded_middle_informative (cutoff <= z < location)%R)
-      as [Hz | Hnz].
-    + rewrite (real_indicator_true _ Hz).
-      rewrite (Rabs_left (z - location)) by lra.
-      assert (Hexp :
-        (exp (- - (z - location) / scale) =
-          exp (- location / scale) * exp ((1 / scale) * z))%R).
-      {
-        rewrite <- exp_plus.
-        f_equal; field; lra.
-      }
-      rewrite Hexp; ring.
-    + rewrite (real_indicator_false (cutoff <= z < location)%R) by
-        exact Hnz.
-      ring.
-  - rewrite real_integral_between_scale.
-    rewrite (real_integral_exp_between cutoff location (1 / scale)).
-    2: exact Hcutoff.
-    2: unfold Rdiv; apply Rmult_integral_contrapositive_currified;
-       [lra | apply Rinv_neq_0_compat; lra].
-    assert (Hexp_cutoff :
-      (exp (- location / scale) * exp ((1 / scale) * cutoff) =
-        exp ((cutoff - location) / scale))%R).
-    {
-      rewrite <- exp_plus.
-      f_equal; field; lra.
-    }
-    assert (Hexp_location :
-      (exp (- location / scale) * exp ((1 / scale) * location) = 1)%R).
-    {
-      rewrite <- exp_plus.
-      replace (- location / scale + 1 / scale * location)%R with 0%R by
-        (field; lra).
-      apply exp_0.
-    }
-    transitivity
-      (((1 / (2 * scale)) *
-        (exp (- location / scale) * exp ((1 / scale) * location) -
-         exp (- location / scale) * exp ((1 / scale) * cutoff))) /
-        (1 / scale))%R.
-    + field; lra.
-    + rewrite Hexp_location, Hexp_cutoff.
-      field; lra.
-Qed.
-
-Lemma laplace_integral_right_above :
-  forall location scale cutoff : R,
-    (0 < scale)%R ->
-    (location <= cutoff)%R ->
-    real_integral_above cutoff
-      (fun z =>
-        (1 / (2 * scale)) *
-          exp (- Rabs (z - location) / scale)) =
-      ((1 / 2) * exp (- (cutoff - location) / scale))%R.
-Proof.
-  intros location scale cutoff Hscale Hcutoff.
-  transitivity
-    (real_integral_above cutoff
-      (fun z =>
-        ((1 / (2 * scale)) * exp (location / scale)) *
-          exp ((- 1 / scale) * z))).
-  - unfold real_integral_above.
-    apply real_integral_extensional.
-    intro z.
-    destruct (Rle_dec cutoff z) as [Hz | Hnz].
-    + rewrite (real_indicator_true _ Hz).
-      rewrite (Rabs_right (z - location)) by lra.
-      assert (Hexp :
-        (exp (- (z - location) / scale) =
-          exp (location / scale) * exp ((- 1 / scale) * z))%R).
-      {
-        rewrite <- exp_plus.
-        f_equal; field; lra.
-      }
-      rewrite Hexp; ring.
-    + rewrite (real_indicator_false (cutoff <= z)%R) by exact Hnz.
-      ring.
-  - rewrite real_integral_above_scale.
-    rewrite (real_integral_exp_above cutoff (- 1 / scale)).
-    2: {
-      replace (- 1 / scale)%R with (- (1 / scale))%R by
-        (field; lra).
-      apply Ropp_lt_gt_0_contravar.
-      apply Rdiv_lt_0_compat; lra.
-    }
-    assert (Hexp :
-      (exp (location / scale) * exp ((- 1 / scale) * cutoff) =
-        exp (- (cutoff - location) / scale))%R).
-    {
-      rewrite <- exp_plus.
-      f_equal; field; lra.
-    }
-    transitivity
-      ((1 / (2 * scale)) *
-        (exp (location / scale) * exp ((- 1 / scale) * cutoff)) *
-        scale)%R.
-    + field; lra.
-    + rewrite Hexp.
-      field; lra.
-Qed.
-
-Lemma laplace_integral_strict_cdf :
-  forall location scale cutoff : R,
-    (0 < scale)%R ->
-    real_integral
-      (fun z =>
-        ((1 / (2 * scale)) *
-          exp (- Rabs (z - location) / scale)) *
-        real_indicator (z < cutoff)%R) =
-      laplace_cdf location scale cutoff.
-Proof.
-  intros location scale cutoff Hscale.
-  unfold laplace_cdf.
-  destruct (Rle_dec cutoff location) as [Hleft | Hright].
-  - transitivity
-      (real_integral_below cutoff
-        (fun z =>
-          (1 / (2 * scale)) *
-            exp (- Rabs (z - location) / scale))).
-    + unfold real_integral_below.
-      apply real_integral_extensional; intro z; ring.
-    + apply laplace_integral_left_below; assumption.
-  - transitivity
-      (real_integral_below location
-        (fun z =>
-          (1 / (2 * scale)) *
-            exp (- Rabs (z - location) / scale)) +
-       real_integral_between location cutoff
-        (fun z =>
-          (1 / (2 * scale)) *
-            exp (- Rabs (z - location) / scale)))%R.
-    + unfold real_integral_below, real_integral_between.
-      rewrite <- real_integral_add.
-      apply real_integral_extensional.
-      intro z.
-      destruct (Rlt_dec z location) as [Hzl | Hnzl].
-      * rewrite (real_indicator_true (z < cutoff)%R) by lra.
-        rewrite (real_indicator_true (z < location)%R) by exact Hzl.
-        rewrite (real_indicator_false (location <= z < cutoff)%R) by lra.
-        ring.
-      * destruct (Rlt_dec z cutoff) as [Hzc | Hnzc].
-        -- rewrite (real_indicator_true (z < cutoff)%R) by exact Hzc.
-           rewrite (real_indicator_false (z < location)%R) by exact Hnzl.
-           rewrite (real_indicator_true (location <= z < cutoff)%R) by lra.
-           ring.
-        -- rewrite (real_indicator_false (z < cutoff)%R) by exact Hnzc.
-           rewrite (real_indicator_false (z < location)%R) by lra.
-           rewrite (real_indicator_false (location <= z < cutoff)%R) by lra.
-           ring.
-    + rewrite (laplace_integral_left_below location scale location Hscale)
-        by lra.
-      rewrite (laplace_integral_right_between location scale cutoff Hscale)
-        by lra.
-      rewrite Rminus_diag.
-      cbn.
-      rewrite Rdiv_0_l by lra.
-      rewrite exp_0.
-      lra.
-Qed.
-
-Lemma laplace_integral_survival :
-  forall location scale cutoff : R,
-    (0 < scale)%R ->
-    real_integral
-      (fun z =>
-        ((1 / (2 * scale)) *
-          exp (- Rabs (z - location) / scale)) *
-        real_indicator (cutoff <= z)%R) =
-      (1 - laplace_cdf location scale cutoff)%R.
-Proof.
-  intros location scale cutoff Hscale.
-  unfold laplace_cdf.
-  destruct (Rle_dec cutoff location) as [Hleft | Hright].
-  - transitivity
-      (real_integral_between cutoff location
-        (fun z =>
-          (1 / (2 * scale)) *
-            exp (- Rabs (z - location) / scale)) +
-       real_integral_above location
-        (fun z =>
-          (1 / (2 * scale)) *
-            exp (- Rabs (z - location) / scale)))%R.
-    + unfold real_integral_between, real_integral_above.
-      rewrite <- real_integral_add.
-      apply real_integral_extensional.
-      intro z.
-      destruct (Rlt_dec z location) as [Hzl | Hnzl].
-      * destruct (Rle_dec cutoff z) as [Hcz | Hncz].
-        -- rewrite (real_indicator_true (cutoff <= z)%R) by exact Hcz.
-           rewrite (real_indicator_true (cutoff <= z < location)%R) by
-             exact (conj Hcz Hzl).
-           rewrite (real_indicator_false (location <= z)%R) by lra.
-           ring.
-        -- rewrite (real_indicator_false (cutoff <= z)%R) by exact Hncz.
-           rewrite (real_indicator_false (cutoff <= z < location)%R) by lra.
-           rewrite (real_indicator_false (location <= z)%R) by lra.
-           ring.
-      * rewrite (real_indicator_true (cutoff <= z)%R) by lra.
-        rewrite (real_indicator_false (cutoff <= z < location)%R) by lra.
-        rewrite (real_indicator_true (location <= z)%R) by lra.
-        ring.
-    + rewrite (laplace_integral_left_between location scale cutoff Hscale)
-        by lra.
-      rewrite (laplace_integral_right_above location scale location Hscale)
-        by lra.
-      rewrite Rminus_diag.
-      cbn.
-      rewrite Ropp_0.
-      rewrite Rdiv_0_l by lra.
-      rewrite exp_0.
-      lra.
-  - transitivity
-      (real_integral_above cutoff
-        (fun z =>
-          (1 / (2 * scale)) *
-            exp (- Rabs (z - location) / scale))).
-    + unfold real_integral_above.
-      apply real_integral_extensional; intro z; ring.
-    + rewrite (laplace_integral_right_above location scale cutoff Hscale)
-        by lra.
-      ring.
-Qed.
-
+(** Integral binders sample from the incoming state's law, then update only
+    their body. Invalid laws already have zero mass. ConstructFacts proves
+    the integrand measurable and bounded, justifying this real expectation. *)
 Fixpoint q_eval (q : PConstruct) (v : state) : R :=
   match q with
   | QIndicator gamma => real_indicator (satisfies v gamma)
   | QIntegral x d q' =>
-      real_integral
-        (fun k =>
-          distribution_density d v k * q_eval q' (update_real v x k))
+      @ConcreteMeasure.expectation _ RealIntegration.Space (distribution_measure d v)
+        (fun k => q_eval q' (update_real v x k))
   end.
 
-Parameter expectation : Measure -> (state -> R) -> R.
+(** Real expectations are concrete; linearity carries the integrability
+    obligations that were absent from the former axioms. *)
+Definition expectation : Measure -> (state -> R) -> R :=
+  @ConcreteMeasure.expectation _ StateMeasure.Space.
+Definition expectation_integrable : Measure -> (state -> R) -> Prop :=
+  @ConcreteMeasure.Integrable _ StateMeasure.Space.
 
-Axiom expectation_extensional :
-  forall (mu : Measure) (f g : state -> R),
-    (forall v : state, f v = g v) ->
-    expectation mu f = expectation mu g.
+Module IndicatorExpectation.
+Import boot order ssralg ssrnum boolp classical_sets.
+Import reals topology measure measurable_realfun lebesgue_stieltjes_measure Rstruct.
+Import ValuationSpace.
+Import numFieldTopology.Exports MeasurableR.
+Local Open Scope classical_set_scope.
+Local Open Scope ring_scope.
 
-Axiom expectation_scale :
-  forall (mu : Measure) (c : R) (f : state -> R),
-    expectation mu (fun v => c * f v) =
-      (c * expectation mu f)%R.
-
-Lemma expectation_zero :
-  forall mu : Measure,
-    expectation mu (fun _ : state => 0%R) = 0%R.
+(** The Prop-valued indicator and the library's measurable indicator agree. *)
+Lemma indicatorE {T : Type} (A : T -> Prop) v :
+  real_indicator (A v) = numfun.indic A v.
 Proof.
-  intro mu.
-  transitivity
-    (expectation mu (fun v : state => 0 * real_indicator (satisfies v c_true))).
-  - apply expectation_extensional; intro v; ring.
-  - rewrite expectation_scale; ring.
+rewrite /real_indicator numfun.indicE.
+case: (excluded_middle_informative (A v)) => h.
+- by rewrite (mem_set h).
+- have hn : v \notin (A : set T) by apply/negP => /set_mem; exact: h.
+  by rewrite (negbTE hn).
 Qed.
 
-Lemma expectation_constant :
-  forall (mu : Measure) (c : R),
-    expectation mu (fun _ : state => c) =
-      (c * expectation mu (q_eval (QIndicator c_true)))%R.
+Lemma indicator_expectation (mu : StateMeasure.carrier) gamma :
+  expectation mu (q_eval (QIndicator gamma)) =
+    measure_of mu (formula_assertion gamma).
 Proof.
-  intros mu c.
-  transitivity
-    (expectation mu
-      (fun v : state => c * q_eval (QIndicator c_true) v)).
-  - apply expectation_extensional.
-    intro v.
-    cbn [q_eval].
-    rewrite real_indicator_true.
-    + ring.
-    + cbn [c_true satisfies]; tauto.
-  - apply expectation_scale.
+transitivity (ConcreteMeasure.expectation mu (numfun.indic (formula_event gamma))).
+- apply: ConcreteMeasure.expectation_ext => v; exact: indicatorE.
+- apply: ConcreteMeasure.expectation_indicator.
+  exact: measurable_formula_event.
+Qed.
+End IndicatorExpectation.
+
+Lemma expectation_indicator : forall (mu : Measure) (gamma : CFormula),
+  expectation mu (q_eval (QIndicator gamma)) =
+    measure_of mu (formula_assertion gamma).
+Proof. exact IndicatorExpectation.indicator_expectation. Qed.
+
+(** Constants are handled directly, including zero and infinite measures;
+    this identity does not need a general signed-linearity assumption. *)
+Lemma expectation_constant : forall (mu : Measure) (c : R),
+  expectation mu (fun _ : state => c) =
+    (c * expectation mu (q_eval (QIndicator c_true)))%R.
+Proof.
+  intros mu c; rewrite expectation_indicator.
+  transitivity (c * measure_of mu (fun _ => True))%R.
+  - exact (@ConcreteMeasure.expectation_constant _ StateMeasure.Space mu c).
+  - f_equal; apply measure_extensional; intro v.
+    unfold formula_assertion, c_true; cbn [satisfies]; tauto.
 Qed.
 
-Axiom expectation_indicator :
-  forall (mu : Measure) (gamma : CFormula),
-    expectation mu (q_eval (QIndicator gamma)) =
-      measure_of mu (formula_assertion gamma).
+Lemma expectation_extensional : forall (mu : Measure) (f g : state -> R),
+  (forall v : state, f v = g v) -> expectation mu f = expectation mu g.
+Proof. intros mu f g h; apply ConcreteMeasure.expectation_ext; exact h. Qed.
+
+Lemma expectation_scale : forall (mu : Measure) (c : R) (f : state -> R),
+  expectation_integrable mu f ->
+  expectation mu (fun v => c * f v) = (c * expectation mu f)%R.
+Proof. intros mu c f h; apply ConcreteMeasure.expectation_scale; exact h. Qed.
+
+Lemma expectation_zero : forall mu : Measure,
+  expectation mu (fun _ : state => 0%R) = 0%R.
+Proof. intro mu; apply ConcreteMeasure.expectation_zero. Qed.
 
 (** Probabilistic terms: [y | r | E[q] | p + p | p p]. *)
 Inductive Pterm : Type :=
@@ -1228,8 +901,8 @@ End ProbabilisticExamples.
 (** The continuous probabilistic While-language syntax from
     [paper/cpWhile.tex].  Command nodes are intentionally permissive: toss
     probabilities and distribution parameters have no validity proof stored
-    in the AST.  Future semantics and proof rules will state the required
-    validity side conditions. *)
+    in the AST. Invalid parameters give zero command kernels; sampling
+    proof rules retain their validity side conditions. *)
 Inductive Cmd : Type :=
   | CSkip
   | CRealAssign (x : RealProgramVar) (t : Term)
@@ -1239,6 +912,356 @@ Inductive Cmd : Type :=
   | CSeq (s1 s2 : Cmd)
   | CIf (beta : CFormula) (s1 s2 : Cmd)
   | CWhile (beta : CFormula) (body : Cmd).
+
+(** Command denotations use subprobability kernels internally. Inputs remain
+    ordinary measures; the admissibility proof is supplied to theorems only. *)
+Module CommandSemantics.
+  Import boot order ssralg ssrnum boolp classical_sets functions reals topology.
+  Import ereal normedtype sequences esum measure measurable_realfun.
+  Import lebesgue_integral lebesgue_stieltjes_measure kernel Rstruct Rstruct_topology.
+  Import Order.TTheory GRing.Theory Num.Theory.
+  Import numFieldTopology.Exports MeasurableR ValuationSpace DistributionSemantics.
+  Local Notation real := [the realType of (Rdefinitions.R : Type)].
+  Local Open Scope classical_set_scope.
+  Local Open Scope ring_scope.
+  Local Open Scope ereal_scope.
+  Set Implicit Arguments.
+  Unset Strict Implicit.
+
+  (** These measurability witnesses belong in the shared layer because
+      constructing a kernel needs them before any supporting file imports CPHL.
+      The generated sigma-algebra reduces state maps to their coordinates. *)
+  Lemma measurable_into_valuation d (X : measurableType d) (f : X -> Valuation) :
+    (forall i, measurable_fun setT (real_coordinate i \o f)) ->
+    (forall i, measurable_fun setT (bool_coordinate i \o f)) ->
+    measurable_fun setT f.
+  Proof.
+  move=> mr mb.
+  apply: (@measurability d _ X [the measurableType _ of Valuation]
+            setT f valuation_generators erefl).
+  move=> _ [A [ [i [U [mU ->] ] ]|[i [U [mU ->] ] ] ] <-].
+  - exact: mr i measurableT U mU.
+  - exact: mb i measurableT U mU.
+  Qed.
+
+  Lemma cformula_eval_bool_spec gamma v :
+    cformula_eval_bool gamma v = true <-> satisfies v gamma.
+  Proof.
+  rewrite /cformula_eval_bool.
+  case: (excluded_middle_informative (satisfies v gamma)) => h; split=> //.
+  Qed.
+
+  Lemma measurable_cformula_eval_bool gamma :
+    measurable_fun [set: Valuation] (cformula_eval_bool gamma).
+  Proof.
+  apply: (measurable_fun_bool true); rewrite setTI.
+  have -> : (cformula_eval_bool gamma @^-1` [set true]) = formula_event gamma.
+    apply functional_extensionality; intro v.
+    apply propext; exact: cformula_eval_bool_spec.
+  exact: measurable_formula_event.
+  Qed.
+
+  (** Joint measurability is needed for sampling: the assigned value is an
+      additional input coordinate, not a fixed constant. *)
+  Lemma measurable_real_update x :
+    measurable_fun [set: Valuation * real]
+      (fun p => update_real p.1 x p.2 : Valuation).
+  Proof.
+  apply: measurable_into_valuation.
+  - case=> y /=; rewrite /comp /real_coordinate /update_real /=.
+    + rewrite /update_real_values.
+      case: (real_program_var_eq_dec y x) => _.
+      * exact: measurable_snd.
+      * exact: measurableT_comp (measurable_real_coordinate (inl y)) measurable_fst.
+    + exact: measurableT_comp (measurable_real_coordinate (inr y)) measurable_fst.
+  - case=> b /=; rewrite /comp /bool_coordinate /update_real /=.
+    + exact: measurableT_comp (measurable_bool_coordinate (inl b)) measurable_fst.
+    + exact: measurableT_comp (measurable_bool_coordinate (inr b)) measurable_fst.
+  Qed.
+
+  Lemma measurable_bool_update b :
+    measurable_fun [set: Valuation * bool]
+      (fun p => update_bool p.1 b p.2 : Valuation).
+  Proof.
+  apply: measurable_into_valuation.
+  - case=> x /=; rewrite /comp /real_coordinate /update_bool /=.
+    + exact: measurableT_comp (measurable_real_coordinate (inl x)) measurable_fst.
+    + exact: measurableT_comp (measurable_real_coordinate (inr x)) measurable_fst.
+  - case=> c /=; rewrite /comp /bool_coordinate /update_bool /=.
+    + rewrite /update_bool_values.
+      case: (bool_program_var_eq_dec c b) => _.
+      * exact: measurable_snd.
+      * exact: measurableT_comp (measurable_bool_coordinate (inl c)) measurable_fst.
+    + exact: measurableT_comp (measurable_bool_coordinate (inr c)) measurable_fst.
+  Qed.
+
+  (** Deterministic assignments evaluate their right-hand sides in the input
+      state and then apply the jointly measurable update. *)
+  Lemma measurable_real_assignment x t :
+    measurable_fun [set: Valuation]
+      (fun v => update_real v x (term_eval t v) : Valuation).
+  Proof.
+  exact (measurableT_comp (measurable_real_update x)
+    (measurable_fun_pair
+      (@measurable_id _ [the measurableType _ of Valuation] setT)
+      (measurable_term t))).
+  Qed.
+
+  Lemma measurable_bool_assignment b gamma :
+    measurable_fun [set: Valuation]
+      (fun v => update_bool v b (cformula_eval_bool gamma v) : Valuation).
+  Proof.
+  exact (measurableT_comp (measurable_bool_update b)
+    (measurable_fun_pair
+      (@measurable_id _ [the measurableType _ of Valuation] setT)
+      (measurable_cformula_eval_bool gamma))).
+  Qed.
+
+  Definition Kernel := real.-spker Valuation ~> Valuation.
+
+  (** Dirac kernels implement deterministic updates of program coordinates. *)
+  Definition skip : Valuation -> StateMeasure.carrier :=
+    kdirac (@measurable_id _ [the measurableType _ of Valuation] setT).
+  HB.instance Definition _ := ProbabilityKernel.on skip.
+  Definition real_assign x t : Valuation -> StateMeasure.carrier :=
+    kdirac (measurable_real_assignment x t).
+  HB.instance Definition _ x t := ProbabilityKernel.on (real_assign x t).
+  Definition bool_assign b gamma : Valuation -> StateMeasure.carrier :=
+    kdirac (measurable_bool_assignment b gamma).
+  HB.instance Definition _ b gamma := ProbabilityKernel.on (bool_assign b gamma).
+
+  Definition real_update x : (Valuation * real) -> StateMeasure.carrier :=
+    kdirac (measurable_real_update x).
+  HB.instance Definition _ x := ProbabilityKernel.on (real_update x).
+  Definition bool_update b : (Valuation * bool) -> StateMeasure.carrier :=
+    kdirac (measurable_bool_update b).
+  HB.instance Definition _ b := ProbabilityKernel.on (bool_update b).
+
+  (** Parameterized composition keeps the incoming state available while
+      drawing a value, so a distribution may mention the variable it replaces. *)
+  Section Bind.
+  Context {d} {Y : measurableType d}.
+  Variables (l : real.-spker Valuation ~> Y)
+            (k : real.-spker (Valuation * Y) ~> Valuation).
+  Definition bind := mkcomp l k.
+  HB.instance Definition _ := Kernel.on bind.
+  Lemma bind_mass v : bind v setT <= 1.
+  Proof.
+  apply: (@le_trans _ _ (\int[l v]__ 1)); last first.
+    by rewrite integral_cst// mul1e; exact: sprob_kernel_le1.
+  apply: ge0_le_integral => //.
+  - exact: measurableT_comp (measurable_kernel k _ measurableT) _.
+  - by move=> y _; exact: sprob_kernel_le1.
+  Qed.
+  HB.instance Definition _ := Kernel_isSubProbability.Build _ _ _ _ _ bind
+    ((sprob_kernelP bind).2 bind_mass).
+  End Bind.
+
+  Definition sample x d := bind [the real.-spker _ ~> _ of DistributionSemantics.real_law d]
+      [the real.-spker _ ~> _ of real_update x].
+  HB.instance Definition _ x d := SubProbabilityKernel.on (sample x d).
+  Definition toss b r := bind [the real.-spker _ ~> _ of DistributionSemantics.bool_law (TConst r)]
+      [the real.-spker _ ~> _ of bool_update b].
+  HB.instance Definition _ b r := SubProbabilityKernel.on (toss b r).
+
+  (** Lift a kernel to ignore an extra parameter. This is shared by sequence
+      and the paper's transformer on input measures. *)
+  Section After.
+  Context {d} {X : measurableType d}.
+  Variable k : Kernel.
+  Definition after (p : X * Valuation) : StateMeasure.carrier := k p.2.
+  Lemma after_measurable A : measurable A ->
+    measurable_fun setT (after ^~ A).
+  Proof.
+  move=> mA; exact: measurableT_comp (measurable_kernel k _ mA) measurable_snd.
+  Qed.
+  HB.instance Definition _ := isKernel.Build _ _ _ _ _ after after_measurable.
+  Lemma after_subprob : ereal_sup [set after p setT | p in setT] <= 1.
+  Proof. by apply: ge_ereal_sup => _ [p _ <-]; exact: sprob_kernel_le1. Qed.
+  HB.instance Definition _ := Kernel_isSubProbability.Build _ _ _ _ _ after after_subprob.
+  End After.
+
+  Definition sequence (k l : Kernel) := bind k [the real.-spker _ ~> _ of after l].
+  HB.instance Definition _ k l := SubProbabilityKernel.on (sequence k l).
+
+  (** Branch selection uses the pre-state guard and does not normalize mass. *)
+  Definition branch gamma (k l : Kernel) (v : Valuation) : StateMeasure.carrier :=
+    if cformula_eval_bool gamma v then k v else l v.
+  Lemma branch_measurable gamma k l A : measurable A ->
+    measurable_fun setT (branch gamma k l ^~ A).
+  Proof.
+  move=> mA.
+  have -> : (branch gamma k l ^~ A) =
+      (fun v => if cformula_eval_bool gamma v then k v A else l v A).
+    by apply/funext => v; rewrite /branch; case: (cformula_eval_bool gamma v).
+  apply: measurable_fun_ifT.
+  - exact: measurable_cformula_eval_bool.
+  - exact: measurable_kernel.
+  - exact: measurable_kernel.
+  Qed.
+  HB.instance Definition _ gamma k l := isKernel.Build _ _ _ _ _
+    (branch gamma k l) (branch_measurable gamma k l).
+  Lemma branch_subprob gamma k l :
+    ereal_sup [set branch gamma k l v setT | v in setT] <= 1.
+  Proof.
+  apply: ge_ereal_sup => _ [v _ <-]; rewrite /branch.
+  by case: (cformula_eval_bool gamma v); exact: sprob_kernel_le1.
+  Qed.
+  HB.instance Definition _ gamma k l := Kernel_isSubProbability.Build _ _ _ _ _
+    (branch gamma k l) (branch_subprob gamma k l).
+
+  (** A failed or still-running finite approximation contributes no output. *)
+  Definition zero : Valuation -> StateMeasure.carrier :=
+    @kzero _ _ [the measurableType _ of Valuation] [the measurableType _ of Valuation] real.
+  HB.instance Definition _ := Kernel.on zero.
+  Lemma zero_subprob : ereal_sup [set zero v setT | v in setT] <= 1.
+  Proof. by apply: ge_ereal_sup => _ [v _ <-]; rewrite /zero /kzero /mzero lee_fin ler01. Qed.
+  HB.instance Definition _ := Kernel_isSubProbability.Build _ _ _ _ _ zero zero_subprob.
+
+  (** Exit n counts exactly n completed body executions. Approx n counts
+      exits after at most n executions; its recursive construction is already
+      subprobabilistic, even when the body loses mass. *)
+  Fixpoint loop_exit g (k : Kernel) (n : nat) : Kernel :=
+    match n with
+    | O => [the real.-spker _ ~> _ of branch g
+        [the real.-spker _ ~> _ of zero] [the real.-spker _ ~> _ of skip]]
+    | S n => [the real.-spker _ ~> _ of branch g
+        [the real.-spker _ ~> _ of sequence k (loop_exit g k n)]
+        [the real.-spker _ ~> _ of zero]]
+    end.
+  Fixpoint loop_approx g (k : Kernel) (n : nat) : Kernel :=
+    match n with
+    | O => loop_exit g k O
+    | S n => [the real.-spker _ ~> _ of branch g
+        [the real.-spker _ ~> _ of sequence k (loop_approx g k n)]
+        [the real.-spker _ ~> _ of skip]]
+    end.
+
+  Lemma sequence_event k l v A : sequence k l v A = \int[k v]_w l w A.
+  Proof. reflexivity. Qed.
+  Lemma loop_exit0 g k v A : loop_exit g k O v A =
+    if cformula_eval_bool g v then 0 else dirac v A.
+  Proof.
+  change ((if cformula_eval_bool g v then zero v else skip v) A =
+    if cformula_eval_bool g v then 0 else dirac v A).
+  by case: (cformula_eval_bool g v).
+  Qed.
+  Lemma loop_exitS g k n v A : loop_exit g k n.+1 v A =
+    if cformula_eval_bool g v then \int[k v]_w loop_exit g k n w A else 0.
+  Proof.
+  change ((if cformula_eval_bool g v then sequence k (loop_exit g k n) v else zero v) A =
+    if cformula_eval_bool g v then \int[k v]_w loop_exit g k n w A else 0).
+  by case: (cformula_eval_bool g v).
+  Qed.
+  Lemma loop_approxS g k n v A : loop_approx g k n.+1 v A =
+    if cformula_eval_bool g v then \int[k v]_w loop_approx g k n w A else dirac v A.
+  Proof.
+  change ((if cformula_eval_bool g v then sequence k (loop_approx g k n) v else skip v) A =
+    if cformula_eval_bool g v then \int[k v]_w loop_approx g k n w A else dirac v A).
+  by case: (cformula_eval_bool g v).
+  Qed.
+
+  (** This finite identity supplies the bound needed by the countable sum;
+      no accounting hypothesis about an arbitrary exit sequence is assumed. *)
+  Lemma loop_approx_sum g k n v A : measurable A ->
+    loop_approx g k n v A = \sum_(i < n.+1) loop_exit g k i v A.
+  Proof.
+  move=> mA; elim: n v => [v|n ih v]; first by rewrite big_ord1.
+  rewrite loop_approxS big_ord_recl loop_exit0.
+  case hg: (cformula_eval_bool g v).
+  - rewrite add0e.
+    under eq_integral do rewrite ih.
+    rewrite ge0_integral_sum//; first by move=> i; exact: measurable_kernel.
+    by apply: eq_bigr => i _; rewrite loop_exitS hg.
+  - rewrite (eq_bigr (fun _ => 0)); last by rewrite big1 ?adde0.
+    by move=> i _; rewrite loop_exitS hg.
+  Qed.
+
+  Definition loop g (k : Kernel) :=
+    kseries (fun n => (loop_exit g k n : real.-ker Valuation ~> Valuation)).
+  HB.instance Definition _ g k := Kernel.on (loop g k).
+  Lemma loop_mass g k v : loop g k v setT <= 1.
+  Proof.
+  apply: ConcreteMeasure.series_subprob => n.
+  case: n => [|n].
+  - change ((\sum_(i < 0) loop_exit g k i v setT) <= 1).
+    by rewrite big_ord0 lee_fin ler01.
+  - change ((\sum_(i < n.+1) loop_exit g k i v setT) <= 1).
+    rewrite -loop_approx_sum//; exact: sprob_kernel_le1.
+  Qed.
+  HB.instance Definition _ g k := Kernel_isSubProbability.Build _ _ _ _ _
+    (loop g k) ((sprob_kernelP (loop g k)).2 (loop_mass g k)).
+
+  (** Total denotation on the shared syntax, including nested loops. The
+      while branch uses the already-constructed denotation of its body. *)
+  Fixpoint denote (c : Cmd) : Kernel :=
+    match c with
+    | CSkip => [the real.-spker _ ~> _ of skip]
+    | CRealAssign x t => [the real.-spker _ ~> _ of real_assign x t]
+    | CBoolAssign b g => [the real.-spker _ ~> _ of bool_assign b g]
+    | CBoolToss b r => [the real.-spker _ ~> _ of toss b r]
+    | CRealSample x d => [the real.-spker _ ~> _ of sample x d]
+    | CSeq a b => [the real.-spker _ ~> _ of sequence (denote a) (denote b)]
+    | CIf g a b => [the real.-spker _ ~> _ of branch g (denote a) (denote b)]
+    | CWhile g body => [the real.-spker _ ~> _ of loop g (denote body)]
+    end.
+
+  (** Partial only at the syntax boundary: None reports a while anywhere in
+      the command. No zero/identity placeholder is assigned to a loop. *)
+  Fixpoint nonloop_kernel (c : Cmd) : option Kernel :=
+    match c with
+    | CSkip => Some [the real.-spker _ ~> _ of skip]
+    | CRealAssign x t => Some [the real.-spker _ ~> _ of real_assign x t]
+    | CBoolAssign b g => Some [the real.-spker _ ~> _ of bool_assign b g]
+    | CBoolToss b r => Some [the real.-spker _ ~> _ of toss b r]
+    | CRealSample x d => Some [the real.-spker _ ~> _ of sample x d]
+    | CSeq a b =>
+        match nonloop_kernel a, nonloop_kernel b with
+        | Some k, Some l => Some [the real.-spker _ ~> _ of sequence k l]
+        | _, _ => None
+        end
+    | CIf g a b =>
+        match nonloop_kernel a, nonloop_kernel b with
+        | Some k, Some l => Some [the real.-spker _ ~> _ of branch g k l]
+        | _, _ => None
+        end
+    | CWhile _ _ => None
+    end.
+
+  Definition constant_kernel (mu : StateMeasure.carrier) (_ : unit) := mu.
+  Lemma constant_kernel_measurable mu A : measurable A ->
+    measurable_fun setT (constant_kernel mu ^~ A).
+  Proof. by move=> _; exact: measurable_cst. Qed.
+  HB.instance Definition _ mu := isKernel.Build _ _ _ _ _
+    (constant_kernel mu) (constant_kernel_measurable mu).
+
+  Definition transform (k : Kernel) (mu : StateMeasure.carrier) : StateMeasure.carrier :=
+    mkcomp (constant_kernel mu) (after k) tt.
+  Definition transform_pstate (k : Kernel) (ps : Pstate) : Pstate :=
+    {| pstate_measure := transform k (pstate_measure ps);
+       pstate_prob_logic_values := pstate_prob_logic_values ps |}.
+  Definition run_nonloop (c : Cmd) (ps : Pstate) : option Pstate :=
+    option_map (fun k => transform_pstate k ps) (nonloop_kernel c).
+  Definition run (c : Cmd) (ps : Pstate) : Pstate := transform_pstate (denote c) ps.
+
+  (** The paper's transformer for every command, including nested loops.
+      Its input remains an ordinary measure; admissibility is proved separately. *)
+  Definition transform_cmd (c : Cmd) (mu : StateMeasure.carrier) : StateMeasure.carrier :=
+    transform (denote c) mu.
+
+  (** The paper's forward iteration: restrict to the guard before executing
+      the body. Exit measures remain unnormalized and may overlap as sets. *)
+  Definition loop_step g k mu :=
+    transform k (ConcreteMeasure.restrict mu (measurable_formula_event g)).
+  Fixpoint loop_input g k n (mu : StateMeasure.carrier) : StateMeasure.carrier :=
+    match n with
+    | O => mu
+    | S n => loop_step g k (loop_input g k n mu)
+    end.
+  Definition loop_output g k n mu : StateMeasure.carrier :=
+    msum (fun i => ConcreteMeasure.restrict (loop_input g k i mu)
+      (measurableC (measurable_formula_event g))) n.+1.
+End CommandSemantics.
 
 (** Compilation checks for each command form.  These are syntax examples
     only; they do not assign a denotation to commands. *)
@@ -1285,11 +1308,20 @@ Example command_while_is_well_typed : Cmd := command_while_example.
 Definition c_lt (t1 t2 : Term) : CFormula :=
   c_not (FLe t2 t1).
 
-(** [pformula_valid] is the semantic notion used by CONSEQ.  It is deliberately
-    separate from a proof system for probabilistic formulas: TAUT is outside
-    the present development. *)
+(** Semantic premises quantify over all admissible joint measures and all
+    external probabilistic assignments. Separate EPPL proof-system soundness
+    (the assertion-validity interface associated with TAUT) is deferred. *)
 Definition pformula_valid (eta : PFormula) : Prop :=
-  forall ps : Pstate, psatisfies ps eta.
+  forall ps : Pstate, pstate_admissible ps -> psatisfies ps eta.
+
+(** Semantic Hoare validity quantifies over all admissible joint measures
+    and all external probabilistic assignments. Classical logic coordinates
+    may correlate with program coordinates. Divergence gives missing mass;
+    even a zero output measure must satisfy the postcondition. No derivability
+    or separate parameter-validity condition is built into this definition. *)
+Definition hoare_valid (pre : PFormula) (c : Cmd) (post : PFormula) : Prop :=
+  forall ps : Pstate, pstate_admissible ps -> psatisfies ps pre ->
+    psatisfies (CommandSemantics.run c ps) post.
 
 (** Classical validity interprets the paper's boxed side conditions. *)
 Definition cformula_valid (gamma : CFormula) : Prop :=
@@ -1579,8 +1611,8 @@ Definition subst_real_pconstruct
   (x : RealProgramVar) (replacement : Term) (q : PConstruct) : PConstruct :=
   subst_real_pconstruct_fuel (S (pconstruct_size q)) x replacement q.
 
-(** Boolean-program-variable substitution does not cross a binder, because
-    [QIntegral] binds only real program variables. *)
+(** Classical formulas have no binders, so Boolean substitution is structural
+    here. Its replacement can nevertheless contain real program variables. *)
 Fixpoint subst_bool_cformula
   (b : BoolProgramVar) (replacement : CFormula) (gamma : CFormula) : CFormula :=
   match gamma with
@@ -1594,13 +1626,37 @@ Fixpoint subst_bool_cformula
         (subst_bool_cformula b replacement gamma2)
   end.
 
-Fixpoint subst_bool_pconstruct
-  (b : BoolProgramVar) (replacement : CFormula) (q : PConstruct) : PConstruct :=
-  match q with
-  | QIndicator gamma => QIndicator (subst_bool_cformula b replacement gamma)
-  | QIntegral x d q' =>
-      QIntegral x d (subst_bool_pconstruct b replacement q')
+(** A real binder must not capture the replacement's free real variables.
+    Rename only its body; its own distribution is evaluated outside its scope.
+    Avoid all body names (including nested binders), parameter names, and
+    replacement names. Including [x] also makes the new binder distinct.
+    Renaming preserves size, so the public wrapper supplies enough fuel. *)
+Fixpoint subst_bool_pconstruct_fuel
+  (fuel : nat) (b : BoolProgramVar) (replacement : CFormula)
+  (q : PConstruct) : PConstruct :=
+  match fuel with
+  | O => q
+  | S fuel' =>
+      match q with
+      | QIndicator gamma => QIndicator (subst_bool_cformula b replacement gamma)
+      | QIntegral x d q' =>
+          if in_dec real_program_var_eq_dec x
+               (cformula_real_program_vars replacement)
+          then
+            let fresh := fresh_real_program_var
+              (x :: pconstruct_real_program_vars q' ++
+                distribution_real_program_vars d ++
+                cformula_real_program_vars replacement) in
+            QIntegral fresh d
+              (subst_bool_pconstruct_fuel fuel' b replacement
+                (rename_bound_pconstruct x fresh q'))
+          else QIntegral x d (subst_bool_pconstruct_fuel fuel' b replacement q')
+      end
   end.
+
+Definition subst_bool_pconstruct
+  (b : BoolProgramVar) (replacement : CFormula) (q : PConstruct) : PConstruct :=
+  subst_bool_pconstruct_fuel (S (pconstruct_size q)) b replacement q.
 
 (** Conditioning an expectation must preserve the outer value of a guard.
     Any integral binder occurring in that guard is alpha-renamed before the
@@ -1775,6 +1831,15 @@ Definition if_precondition
   p_and (condition_pformula eta1 guard)
     (condition_pformula eta2 (c_not guard)).
 
+(** SUM splits the input into unnormalized restrictions. Coverage is an
+    assertion about this input; disjointness is a separate classical premise. *)
+Definition sum_precondition
+  (eta1 eta2 : PFormula) (gamma1 gamma2 : CFormula) : PFormula :=
+  p_and
+    (p_and (condition_pformula eta1 gamma1)
+      (condition_pformula eta2 gamma2))
+    (p_almost_sure (c_or gamma1 gamma2)).
+
 (** Bounded families used by the while rule are total functions on [nat].
     These folds observe exactly the entries with indices below [m]. *)
 Fixpoint finite_c_or (m : nat) (formulas : nat -> CFormula) : CFormula :=
@@ -1802,7 +1867,20 @@ Definition p_concentrated_mass (gamma : CFormula) (mass : Pterm) : PFormula :=
       (PExpect (QIndicator c_true)))
     (p_eq (PExpect (QIndicator c_true)) mass).
 
-(** Exact transition and exit probabilities produced by one loop-body step. *)
+(** Concentration is exact even when the total mass is only bounded. These
+    formulas admit zero mass and do not normalize the input. *)
+Definition p_concentrated_mass_upper
+  (gamma : CFormula) (mass : Pterm) : PFormula :=
+  p_and (p_almost_sure gamma)
+    (PFLe (PExpect (QIndicator c_true)) mass).
+
+Definition p_concentrated_mass_lower
+  (gamma : CFormula) (mass : Pterm) : PFormula :=
+  p_and (p_almost_sure gamma)
+    (PFLe mass (PExpect (QIndicator c_true))).
+
+(** Exact transition masses and exit reward produced by one loop-body step.
+    The exit expectation is not generally the total probability of exiting. *)
 Definition while_body_post
   (m : nat) (regions : nat -> CFormula) (transition_row : nat -> R)
   (beta : CFormula) (q : PConstruct) (exit : R) : PFormula :=
@@ -1813,7 +1891,31 @@ Definition while_body_post
           (PConst (transition_row j))))
     (p_eq (PExpect (condition_pconstruct q (c_not beta))) (PConst exit)).
 
-(** The regions form a finite partition of the loop guard. *)
+(** One-sided body certificates use the same conditioned reward as [HWhile].
+    Bounds apply simultaneously to every region and to the exit reward. *)
+Definition while_body_post_upper
+  (m : nat) (regions : nat -> CFormula) (transition_row : nat -> R)
+  (beta : CFormula) (q : PConstruct) (exit : R) : PFormula :=
+  p_and
+    (finite_p_and m
+      (fun j =>
+        PFLe (PExpect (QIndicator (regions j)))
+          (PConst (transition_row j))))
+    (PFLe (PExpect (condition_pconstruct q (c_not beta))) (PConst exit)).
+
+Definition while_body_post_lower
+  (m : nat) (regions : nat -> CFormula) (transition_row : nat -> R)
+  (beta : CFormula) (q : PConstruct) (exit : R) : PFormula :=
+  p_and
+    (finite_p_and m
+      (fun j =>
+        PFLe (PConst (transition_row j))
+          (PExpect (QIndicator (regions j)))))
+    (PFLe (PConst exit) (PExpect (condition_pconstruct q (c_not beta)))).
+
+(** Together these three conditions give the partition used by [HWhile].
+    The upper rule needs only coverage; the lower rule needs only containment
+    and disjointness. All three conditions are globally classically valid. *)
 Definition while_regions_cover
   (m : nat) (beta : CFormula) (regions : nat -> CFormula) : Prop :=
   cformula_valid (FImpl beta (finite_c_or m regions)).
@@ -1830,7 +1932,9 @@ Definition while_regions_disjoint
     (i < m)%nat -> (j < i)%nat ->
     cformula_valid (c_not (c_and (regions i) (regions j))).
 
-(** Every region exits positively or reaches an earlier region positively. *)
+(** Every region has positive exit reward or a positive transition to an
+    earlier region. This selects a lower/exact certificate; upper bounds do
+    not require progress. It does not assert almost-sure termination. *)
 Definition while_progress
   (m : nat) (transitions : nat -> nat -> R) (exits : nat -> R) : Prop :=
   forall i : nat,
@@ -1846,6 +1950,28 @@ Definition while_solution
     (i < m)%nat ->
     solution i =
       (finite_r_sum m (fun j => transitions i j * solution j) + exits i)%R /\
+    (0 <= solution i <= 1)%R.
+
+(** Upper certificates satisfy R*x+r <= x; lower certificates satisfy the
+    reverse inequality and additionally need [while_progress] in their rule.
+    Coefficients remain arbitrary reals, as for [while_solution]. Soundness
+    of lower certificates uses their nonnegative parts on nonempty regions;
+    empty-region body premises must not be used to infer row bounds. *)
+Definition while_upper_solution
+  (m : nat) (solution : nat -> R) (transitions : nat -> nat -> R)
+  (exits : nat -> R) : Prop :=
+  forall i : nat,
+    (i < m)%nat ->
+    (finite_r_sum m (fun j => transitions i j * solution j) + exits i <=
+      solution i)%R /\ (0 <= solution i <= 1)%R.
+
+Definition while_lower_solution
+  (m : nat) (solution : nat -> R) (transitions : nat -> nat -> R)
+  (exits : nat -> R) : Prop :=
+  forall i : nat,
+    (i < m)%nat ->
+    (solution i <=
+      finite_r_sum m (fun j => transitions i j * solution j) + exits i)%R /\
     (0 <= solution i <= 1)%R.
 
 (** A classical formula expressing when a distribution is well formed. *)
@@ -2037,9 +2163,10 @@ Notation "x -> y" := (PFImpl x y)
 Notation "x <-> y" := (p_iff x y)
   (in custom cphl_prob at level 86, no associativity) : cphl_scope.
 
-(** The paper's syntactic Hoare calculus.  The preconditions and
-    postconditions remain syntactic formulas; semantic validity is used only
-    for rule side conditions. *)
+(** The paper's syntactic Hoare calculus, extended with one-sided while
+    certificates from the old paper for bounded construct rewards. The
+    preconditions and postconditions remain syntactic formulas; semantic
+    validity is used only for rule side conditions. *)
 Inductive hoare_derivable : PFormula -> Cmd -> PFormula -> Prop :=
   | HFree :
       forall (eta : PFormula) (s : Cmd),
@@ -2127,6 +2254,30 @@ Inductive hoare_derivable : PFormula -> Cmd -> PFormula -> Prop :=
         hoare_derivable eta0 s eta1 ->
         hoare_derivable eta0 s eta2 ->
         hoare_derivable eta0 s (p_and eta1 eta2)
+  (** SUM runs the same command on two disjoint input pieces. As in [HIfLe]
+      and [HIfGe], Le/Ge name the comparison with the bound on the left. *)
+  | HSumLe :
+      forall (eta1 eta2 : PFormula) (gamma1 gamma2 gamma : CFormula)
+        (y1 y2 : ProbLogicVar) (s : Cmd),
+        cformula_valid (c_not (c_and gamma1 gamma2)) ->
+        hoare_derivable (p_and eta1 (p_almost_sure gamma1)) s
+          (PFLe (PVar y1) (PExpect (QIndicator gamma))) ->
+        hoare_derivable (p_and eta2 (p_almost_sure gamma2)) s
+          (PFLe (PVar y2) (PExpect (QIndicator gamma))) ->
+        hoare_derivable (sum_precondition eta1 eta2 gamma1 gamma2) s
+          (PFLe (PAdd (PVar y1) (PVar y2))
+            (PExpect (QIndicator gamma)))
+  | HSumGe :
+      forall (eta1 eta2 : PFormula) (gamma1 gamma2 gamma : CFormula)
+        (y1 y2 : ProbLogicVar) (s : Cmd),
+        cformula_valid (c_not (c_and gamma1 gamma2)) ->
+        hoare_derivable (p_and eta1 (p_almost_sure gamma1)) s
+          (PFLe (PExpect (QIndicator gamma)) (PVar y1)) ->
+        hoare_derivable (p_and eta2 (p_almost_sure gamma2)) s
+          (PFLe (PExpect (QIndicator gamma)) (PVar y2)) ->
+        hoare_derivable (sum_precondition eta1 eta2 gamma1 gamma2) s
+          (PFLe (PExpect (QIndicator gamma))
+            (PAdd (PVar y1) (PVar y2)))
   | HWhileNot :
       forall (gamma beta : CFormula) (body : Cmd) (y : ProbLogicVar),
         cformula_valid (FImpl gamma (c_not beta)) ->
@@ -2154,7 +2305,51 @@ Inductive hoare_derivable : PFormula -> Cmd -> PFormula -> Prop :=
           (p_concentrated_mass (regions k) (PVar y))
           (CWhile beta body)
           (p_eq (PExpect (condition_pconstruct q (c_not beta)))
-            (PMul (PConst (solution k)) (PVar y))).
+            (PMul (PConst (solution k)) (PVar y)))
+  (** Coverage prevents omitted continuing states in an upper bound.
+      Regions may overlap or extend outside the guard; the initial input
+      must lie in both the guard and region k. No progress premise is needed. *)
+  | HWhileUpper :
+      forall (m k : nat) (beta : CFormula) (body : Cmd) (q : PConstruct)
+        (regions : nat -> CFormula) (solution exits : nat -> R)
+        (transitions : nat -> nat -> R) (y : ProbLogicVar),
+        (k < m)%nat ->
+        while_regions_cover m beta regions ->
+        (forall i : nat,
+          (i < m)%nat ->
+          hoare_derivable
+            (p_concentrated_mass (regions i) (PConst 1%R))
+            body
+            (while_body_post_upper m regions (transitions i) beta q (exits i))) ->
+        while_upper_solution m solution transitions exits ->
+        hoare_derivable
+          (p_concentrated_mass_upper (c_and beta (regions k)) (PVar y))
+          (CWhile beta body)
+          (PFLe (PExpect (condition_pconstruct q (c_not beta)))
+            (PMul (PConst (solution k)) (PVar y)))
+  (** Disjoint guarded regions avoid overcounting in a lower bound; they
+      need not cover the guard. Progress is essential to exclude certificates
+      justified solely by nonterminating circulation. *)
+  | HWhileLower :
+      forall (m k : nat) (beta : CFormula) (body : Cmd) (q : PConstruct)
+        (regions : nat -> CFormula) (solution exits : nat -> R)
+        (transitions : nat -> nat -> R) (y : ProbLogicVar),
+        (k < m)%nat ->
+        while_regions_in_guard m beta regions ->
+        while_regions_disjoint m regions ->
+        while_progress m transitions exits ->
+        (forall i : nat,
+          (i < m)%nat ->
+          hoare_derivable
+            (p_concentrated_mass (regions i) (PConst 1%R))
+            body
+            (while_body_post_lower m regions (transitions i) beta q (exits i))) ->
+        while_lower_solution m solution transitions exits ->
+        hoare_derivable
+          (p_concentrated_mass_lower (regions k) (PVar y))
+          (CWhile beta body)
+          (PFLe (PMul (PConst (solution k)) (PVar y))
+            (PExpect (condition_pconstruct q (c_not beta)))).
 
 (** Hoare triples use a separate scope so importing this module does not
     activate proof-judgment notation implicitly. *)
@@ -2199,23 +2394,23 @@ Proof.
   {
     eapply HConseq with (eta1 := eta) (eta2 := eta).
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies p_and p_not]; tauto.
+      intros ps Hsub; cbn [psatisfies p_and p_not]; tauto.
     - exact Hraw.
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies]; tauto.
+      intros ps Hsub; cbn [psatisfies]; tauto.
   }
   assert (Hrigid :
     hoare_derivable (p_and eta rigid) (CWhile beta body) rigid).
   {
     eapply HConseq with (eta1 := rigid) (eta2 := rigid).
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies p_and p_not]; tauto.
+      intros ps Hsub; cbn [psatisfies p_and p_not]; tauto.
     - apply HFree.
       unfold rigid.
       cbn [p_eq p_and p_not pformula_analytical pterm_analytical].
       tauto.
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies]; tauto.
+      intros ps Hsub; cbn [psatisfies]; tauto.
   }
   change
     (hoare_derivable
@@ -2226,11 +2421,11 @@ Proof.
   - eapply HConseq with
       (eta1 := p_and eta rigid) (eta2 := p_and eta rigid).
     + unfold pformula_valid.
-      intro ps; cbn [psatisfies]; tauto.
+      intros ps Hsub; cbn [psatisfies]; tauto.
     + apply HAnd; assumption.
     + unfold pformula_valid, eta, rigid, desired,
         p_concentrated_mass.
-      intro ps.
+      intros ps Hsub.
       cbn [psatisfies p_and p_not p_eq pterm_eval].
       nra.
   - cbn [prob_logic_var_occurs_pterm]; tauto.
@@ -2299,11 +2494,11 @@ Section HoareRuleExamples.
   Proof.
     apply HRealSample.
     - unfold pformula_valid, demo_sample_precondition.
-      intros ps.
+      intros ps Hsub.
       cbn [p_and p_not psatisfies].
       tauto.
     - unfold pformula_valid, demo_sample_precondition.
-      intros ps.
+      intros ps Hsub.
       cbn [p_and p_not psatisfies].
       tauto.
   Qed.
@@ -2375,10 +2570,10 @@ Section HoareRuleExamples.
   Proof.
     eapply HConseq with (eta1 := p_true) (eta2 := p_true).
     - unfold pformula_valid.
-      intros ps; cbn [p_true psatisfies]; tauto.
+      intros ps Hsub; cbn [p_true psatisfies]; tauto.
     - apply HSkip.
     - unfold pformula_valid.
-      intros ps; cbn [p_true psatisfies]; tauto.
+      intros ps Hsub; cbn [p_true psatisfies]; tauto.
   Qed.
 
   Example conjunction_rule_example :
@@ -2402,10 +2597,10 @@ Section HoareRuleExamples.
         (eta1 := p_and p_true (p_eq (PVar demo_hoare_y1) (PConst 0%R)))
         (eta2 := p_and p_true (p_eq (PVar demo_hoare_y1) (PConst 0%R))).
       + unfold pformula_valid.
-        intros ps; cbn [p_and p_not p_eq psatisfies]; tauto.
+        intros ps Hsub; cbn [p_and p_not p_eq psatisfies]; tauto.
       + apply HSkip.
       + unfold pformula_valid.
-        intros ps; cbn [p_true psatisfies p_and p_not p_eq]; tauto.
+        intros ps Hsub; cbn [p_true psatisfies p_and p_not p_eq]; tauto.
     - cbn [prob_logic_var_occurs_pterm]; tauto.
     - cbn [p_true prob_logic_var_occurs_pformula]; tauto.
   Qed.
