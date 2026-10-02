@@ -1,0 +1,18 @@
+# Local dependency installations and generated build/verification output.
+.toolchain/
+.build/
+__pycache__/
+*.vo
+*.vos
+*.vok
+*.glob
+.*.aux
+.lia.cache
+.nra.cache
+.nia.cache
+Makefile.coq
+Makefile.coq.conf
+.Makefile.coq.d
+
+# Preserve the previous development README locally, outside the publication.
+/README.full.md

@@ -20,9 +20,19 @@ From Stdlib Require Import Psatz.
 From Stdlib Require Import Field.
 From Stdlib Require Import Ring.
 From Stdlib Require Import Logic.FunctionalExtensionality.
-From Stdlib Require Import ClassicalDescription.
 
 Require Import CPHL.
+(** Distribution calculations are separate from the concrete semantic core. *)
+Require Import AnalyticalCalculations.
+
+(** Keep propositional automation intuitionistic; when classical reasoning
+    is needed, use MathComp's double-negation law rather than the default
+    Stdlib fallback of [tauto]. *)
+Local Ltac mathcomp_tauto :=
+  first [solve [intuition fail] |
+    apply (proj1 (boolp.not_notP _)); solve [intuition fail] ].
+(** Concrete density rewrites require valid sampling parameters. Semantic
+    assertion premises additionally introduce admissibility of the input. *)
 
 Open Scope R_scope.
 Open Scope string_scope.
@@ -30,6 +40,31 @@ Local Open Scope cphl_scope.
 Local Open Scope cphl_hoare_scope.
 
 (** Program variables. *)
+(** Extensionality followed by the integral of zero, without a validity
+    restriction on the sampling parameters. *)
+Local Ltac zero_sampling_expectation :=
+  etransitivity;
+  [apply MeasureIntegration.ConcreteMeasure.expectation_ext |
+   apply MeasureIntegration.ConcreteMeasure.expectation_zero].
+
+(** Nested Boolean substitutions can expose another variable decision
+    before their size/fuel reduces. Finish those reductions before using
+    the syntax-to-event indicator bridge. *)
+Local Ltac expose_construct_indicator :=
+  repeat first
+    [progress cbn [subst_bool_pconstruct subst_bool_pconstruct_fuel
+       subst_bool_cformula condition_pconstruct condition_pconstruct_fuel
+       pconstruct_size cformula_real_program_vars pconstruct_real_program_vars
+       distribution_real_program_vars term_real_program_vars List.app List.in_dec
+       list_rec list_rect q_eval c_and c_not c_true]
+    | match goal with
+      | |- context [bool_program_var_eq_dec ?x ?y] =>
+          destruct (bool_program_var_eq_dec x y); try congruence
+      | |- context [real_program_var_eq_dec ?x ?y] =>
+          destruct (real_program_var_eq_dec x y); try congruence
+      end];
+  rewrite ?q_eval_indicatorE, ?formula_indicatorE.
+
 Definition q1 : RealProgramVar := real_program_var "q1".
 Definition q2 : RealProgramVar := real_program_var "q2".
 Definition threshold : RealProgramVar := real_program_var "threshold".
@@ -195,7 +230,7 @@ Proof.
           rewrite (real_indicator_true _ Hle).
           reflexivity.
         * rewrite (real_indicator_false
-            (noisy1 < threshold /\ threshold <= noisy2)%R) by tauto.
+            (noisy1 < threshold /\ threshold <= noisy2)%R) by mathcomp_tauto.
           rewrite (real_indicator_false (threshold <= noisy2)%R) by exact Hnle.
           ring.
       + unfold laplace_density_R.
@@ -207,7 +242,7 @@ Proof.
       + apply real_integral_extensional.
         intro noisy2.
         rewrite (real_indicator_false
-          (noisy1 < threshold /\ threshold <= noisy2)%R) by tauto.
+          (noisy1 < threshold /\ threshold <= noisy2)%R) by mathcomp_tauto.
         ring.
       + rewrite real_integral_zero; ring.
   }
@@ -239,7 +274,11 @@ Proof.
             laplace_density_R 0 (4 / epsilon) noisy1 *
             real_indicator (noisy1 < threshold)%R)) *
           (1 - laplace_cdf 1 (4 / epsilon) threshold))%R.
-      + rewrite <- real_integral_scale_right.
+      + rewrite <- real_integral_scale_right by
+          (apply real_integrable_mask_right;
+           [first [apply real_measurable_below | apply real_measurable_above] |
+            unfold laplace_density_R; apply real_integrable_laplace;
+            apply Rdiv_lt_0_compat; lra]).
         apply real_integral_extensional.
         intro noisy1.
         ring.
@@ -473,6 +512,21 @@ Proof.
     field.
 Qed.
 
+(** The piecewise exponential expansion also proves absolute integrability
+    on this region, independently of its closed-form integral value. *)
+Lemma integral_rate_below_integrable : forall rate : R, 0 < rate ->
+  real_integrable (fun threshold => real_indicator (threshold < 0) *
+    threshold_integrand_rate rate threshold).
+Proof.
+  intros rate Hrate.
+  apply real_integrable_mask_ext with (g := (fun threshold =>
+        (rate / 2) * exp ((3 * rate) * threshold) +
+        (- rate / 4 * exp (- rate)) *
+          exp ((4 * rate) * threshold))).
+  - intros threshold Hthreshold; apply integrand_rate_below_pointwise; exact Hthreshold.
+  - region_integrable.
+Qed.
+
 Lemma integral_rate_below :
   forall rate : R,
     (0 < rate)%R ->
@@ -495,12 +549,29 @@ Proof.
       reflexivity.
     + rewrite (real_indicator_false (threshold < 0)%R) by exact Hthreshold.
       ring.
-  - rewrite real_integral_below_add.
-    rewrite !real_integral_below_scale.
+  - rewrite real_integral_below_add by region_integrable.
+    rewrite !real_integral_below_scale by region_integrable.
     rewrite (real_integral_exp_below 0 (3 * rate)) by lra.
     rewrite (real_integral_exp_below 0 (4 * rate)) by lra.
     rewrite !Rmult_0_r, !exp_0.
     field; lra.
+Qed.
+
+(** The piecewise exponential expansion also proves absolute integrability
+    on this region, independently of its closed-form integral value. *)
+Lemma integral_rate_between_integrable : forall rate : R, 0 < rate ->
+  real_integrable (fun threshold => real_indicator (0 <= threshold < 1) *
+    threshold_integrand_rate rate threshold).
+Proof.
+  intros rate Hrate.
+  apply real_integrable_mask_ext with (g := (fun threshold =>
+        (rate * (1 + exp (- rate) / 4)) *
+          exp ((- 2 * rate) * threshold) +
+        (- rate / 2) * exp ((- 3 * rate) * threshold) +
+        (- rate / 2 * exp (- rate)) *
+          exp ((- rate) * threshold))).
+  - intros threshold Hthreshold; apply integrand_rate_between_pointwise; exact Hthreshold.
+  - region_integrable.
 Qed.
 
 Lemma integral_rate_between :
@@ -521,7 +592,7 @@ Proof.
   - unfold real_integral_between.
     apply real_integral_extensional.
     intro threshold.
-    destruct (excluded_middle_informative (0 <= threshold < 1)%R)
+    destruct (boolp.pselect (0 <= threshold < 1)%R)
       as [Hthreshold | Hthreshold].
     + rewrite (real_indicator_true _ Hthreshold).
       rewrite (integrand_rate_between_pointwise rate threshold Hthreshold).
@@ -529,9 +600,9 @@ Proof.
     + rewrite (real_indicator_false (0 <= threshold < 1)%R) by
         exact Hthreshold.
       ring.
-  - rewrite real_integral_between_add.
-    rewrite real_integral_between_add.
-    rewrite !real_integral_between_scale.
+  - rewrite real_integral_between_add by region_integrable.
+    rewrite real_integral_between_add by region_integrable.
+    rewrite !real_integral_between_scale by region_integrable.
     rewrite (real_integral_exp_between 0 1 (- 2 * rate)) by lra.
     rewrite (real_integral_exp_between 0 1 (- 3 * rate)) by lra.
     rewrite (real_integral_exp_between 0 1 (- rate)) by lra.
@@ -563,6 +634,20 @@ Proof.
         field.
 Qed.
 
+(** The piecewise exponential expansion also proves absolute integrability
+    on this region, independently of its closed-form integral value. *)
+Lemma integral_rate_above_integrable : forall rate : R, 0 < rate ->
+  real_integrable (fun threshold => real_indicator (1 <= threshold) *
+    threshold_integrand_rate rate threshold).
+Proof.
+  intros rate Hrate.
+  apply real_integrable_mask_ext with (g := (fun threshold =>
+        (rate / 2 * exp rate) * exp ((- 3 * rate) * threshold) +
+        (- rate / 4 * exp rate) * exp ((- 4 * rate) * threshold))).
+  - intros threshold Hthreshold; apply integrand_rate_above_pointwise; exact Hthreshold.
+  - region_integrable.
+Qed.
+
 Lemma integral_rate_above :
   forall rate : R,
     (0 < rate)%R ->
@@ -584,8 +669,8 @@ Proof.
       reflexivity.
     + rewrite (real_indicator_false (1 <= threshold)%R) by exact Hthreshold.
       ring.
-  - rewrite real_integral_above_add.
-    rewrite !real_integral_above_scale.
+  - rewrite real_integral_above_add by region_integrable.
+    rewrite !real_integral_above_scale by region_integrable.
     rewrite (real_integral_exp_above 1 (- 3 * rate)) by lra.
     rewrite (real_integral_exp_above 1 (- 4 * rate)) by lra.
     rewrite !Rmult_1_r.
@@ -618,7 +703,10 @@ Lemma threshold_integral_rate :
 Proof.
   intros rate Hrate.
   rewrite (real_integral_split_three
-    (threshold_integrand_rate rate) 0 1) by lra.
+    (threshold_integrand_rate rate) 0 1) by
+    (first [lra | apply integral_rate_below_integrable; assumption
+      | apply integral_rate_between_integrable; assumption
+      | apply integral_rate_above_integrable; assumption]).
   rewrite (integral_rate_below rate Hrate).
   rewrite (integral_rate_between rate Hrate).
   rewrite (integral_rate_above rate Hrate).
@@ -715,7 +803,7 @@ Proof.
   intros y r.
   cbn [rigid_constant p_eq p_and p_not
     pformula_analytical pterm_analytical].
-  tauto.
+  mathcomp_tauto.
 Qed.
 
 Lemma add_rigid_constant :
@@ -733,12 +821,12 @@ Proof.
     eapply HConseq with
       (eta1 := eta) (eta2 := event_probability r gamma).
     - unfold pformula_valid.
-      intro ps.
+      intros ps Hps_admissible.
       cbn [p_and p_not psatisfies].
-      tauto.
+      mathcomp_tauto.
     - exact Hbranch.
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies]; tauto.
+      intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
   }
   assert (Hrigid :
     {{ $(eta) /\ $(rigid_constant y r) }} $(s)
@@ -748,24 +836,25 @@ Proof.
       (eta1 := rigid_constant y r)
       (eta2 := rigid_constant y r).
     - unfold pformula_valid.
-      intro ps.
+      intros ps Hps_admissible.
       cbn [p_and p_not psatisfies].
-      tauto.
+      mathcomp_tauto.
     - apply HFree.
       apply rigid_constant_analytical.
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies]; tauto.
+      intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
   }
   eapply HConseq with
     (eta1 := [[ $(eta) /\ $(rigid_constant y r) ]])
     (eta2 := [[ $(event_probability r gamma) /\
       $(rigid_constant y r) ]]).
   - unfold pformula_valid.
-    intro ps; cbn [psatisfies]; tauto.
+    intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
   - apply HAnd; assumption.
   - unfold pformula_valid, event_probability, rigid_constant.
-    intro ps.
+    intros ps Hps_admissible.
     cbn [p_and p_not p_eq psatisfies pterm_eval] in *.
+    clear Hps_admissible.
     intuition lra.
 Qed.
 
@@ -815,13 +904,14 @@ Proof.
       (eta2 := [[ y_then + y_else = Pr[$(gamma)] ]]).
     - unfold pformula_valid, with_constants, base, eq1, eq2,
         if_precondition, rigid_constant.
-      intro ps.
+      intros ps Hps_admissible.
       cbn [condition_pformula condition_pterm p_and p_not p_eq
         psatisfies pterm_eval] in *.
+      clear Hps_admissible.
       intuition lra.
     - exact Hif.
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies]; tauto.
+      intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
   }
   assert (Hconstants :
     {{ $(with_constants) }}
@@ -832,16 +922,16 @@ Proof.
       (eta1 := [[ $(eq1) /\ $(eq2) ]])
       (eta2 := [[ $(eq1) /\ $(eq2) ]]).
     - unfold pformula_valid, with_constants.
-      intro ps.
+      intros ps Hps_admissible.
       cbn [p_and p_not psatisfies].
-      tauto.
+      mathcomp_tauto.
     - apply HFree.
       unfold eq1, eq2.
       cbn [rigid_constant p_eq p_and p_not
         pformula_analytical pterm_analytical].
-      tauto.
+      mathcomp_tauto.
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies]; tauto.
+      intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
   }
   assert (Hwithout_rigids :
     {{ $(with_constants) }}
@@ -854,12 +944,13 @@ Proof.
         (y_then + y_else = Pr[$(gamma)]) /\ $(eq1) /\ $(eq2)
       ]]).
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies]; tauto.
+      intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
     - apply HAnd; assumption.
     - unfold pformula_valid, event_probability, eq1, eq2,
         rigid_constant.
-      intro ps.
+      intros ps Hps_admissible.
       cbn [p_and p_not p_eq psatisfies pterm_eval] in *.
+      clear Hps_admissible.
       intuition lra.
   }
   assert (Helim_else :
@@ -875,10 +966,10 @@ Proof.
         if $(guard) then $(s1) else $(s2) end
         {{ $(event_probability (r1 + r2) gamma) }}).
       exact Hwithout_rigids.
-    - cbn [prob_logic_var_occurs_pterm]; tauto.
+    - cbn [prob_logic_var_occurs_pterm]; mathcomp_tauto.
     - cbn [event_probability p_eq p_and p_not
         prob_logic_var_occurs_pformula prob_logic_var_occurs_pterm].
-      tauto.
+      mathcomp_tauto.
   }
   assert (Helim_then :
     {{ $(subst_prob_pformula y_then [[ $(r1) ]]
@@ -894,10 +985,10 @@ Proof.
         if $(guard) then $(s1) else $(s2) end
         {{ $(event_probability (r1 + r2) gamma) }}).
       exact Helim_else.
-    - cbn [prob_logic_var_occurs_pterm]; tauto.
+    - cbn [prob_logic_var_occurs_pterm]; mathcomp_tauto.
     - cbn [event_probability p_eq p_and p_not
         prob_logic_var_occurs_pformula prob_logic_var_occurs_pterm].
-      tauto.
+      mathcomp_tauto.
   }
   unfold base in Helim_then.
   exact Helim_then.
@@ -912,7 +1003,7 @@ Lemma laplace_constant_valid :
 Proof.
   intros location scale Hscale.
   unfold pformula_valid.
-  intro ps.
+  intros ps Hps_admissible.
   assert (Heq :
     expectation (pstate_measure ps)
       (q_eval
@@ -946,12 +1037,12 @@ Proof.
   intros eta x location scale Hscale.
   apply HRealSample.
   - unfold pformula_valid.
-    intro ps; cbn [psatisfies]; tauto.
+    intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
   - unfold pformula_valid.
-    intro ps.
+    intros ps Hps_admissible.
     cbn [psatisfies].
     intro Hpre.
-    apply (laplace_constant_valid location scale Hscale ps).
+    apply (laplace_constant_valid location scale Hscale ps Hps_admissible).
 Qed.
 
 Definition output_probability (r : R) : PFormula :=
@@ -1117,15 +1208,23 @@ Qed.
 
 Lemma path_integral_01_eval :
   forall (epsilon : R) (v : state),
+    (0 < epsilon)%R ->
     q_eval (path_integral_01 epsilon) v =
       nested_integral epsilon.
 Proof.
-  intros epsilon v.
+  intros epsilon v Hepsilon.
   unfold path_integral_01, nested_integral,
     laplace_density_R, threshold_distribution,
     query_distribution, path_event, c_and, c_not, c_lt.
+  repeat rewrite q_eval_integral_density by
+    (intro w; cbn [distribution_valid term_eval];
+     first [assumption | lra | apply Rdiv_lt_0_compat; lra]).
   cbn [q_eval distribution_density term_eval satisfies update_real
     real_program_values].
+  (** Recover the event-mask interface after reducing a construct leaf. *)
+  repeat rewrite (FunctionalExtensionality.functional_extensionality
+    _ _ (formula_indicatorE _)).
+  cbn [distribution_density term_eval satisfies update_real real_program_values].
   apply real_integral_extensional.
   intro threshold.
   f_equal.
@@ -1135,7 +1234,7 @@ Proof.
   apply real_integral_extensional.
   intro noisy2.
   f_equal.
-  apply real_indicator_extensional.
+  expose_construct_indicator; apply real_indicator_extensional.
   unfold SVT_notation.threshold, SVT_notation.noisy1,
     SVT_notation.noisy2.
   cbn [satisfies c_not term_eval update_real update_real_values
@@ -1238,23 +1337,29 @@ Proof.
     first_comparison, second_comparison, bot_top,
     path_event, q1, q2, threshold, noisy1,
     noisy2, above1, above2, out1, out2.
-  cbn [subst_bool_pconstruct subst_bool_cformula
+  cbn [subst_bool_pconstruct subst_bool_pconstruct_fuel subst_bool_cformula
     condition_pconstruct condition_pconstruct_fuel
     cformula_real_program_vars pconstruct_real_program_vars
     distribution_real_program_vars term_real_program_vars pconstruct_size
     List.in_dec real_program_var_eq_dec bool_program_var_eq_dec
     q_eval distribution_density term_eval satisfies update_real
     update_real_values real_program_values c_and c_not c_lt c_true].
-  apply real_integral_extensional.
+  (** Recover the event-mask interface after reducing a construct leaf. *)
+  repeat rewrite (FunctionalExtensionality.functional_extensionality
+    _ _ (formula_indicatorE _)).
+  cbn [subst_bool_pconstruct subst_bool_pconstruct_fuel subst_bool_cformula condition_pconstruct
+    condition_pconstruct_fuel cformula_real_program_vars pconstruct_real_program_vars
+    distribution_real_program_vars term_real_program_vars pconstruct_size List.in_dec
+    real_program_var_eq_dec bool_program_var_eq_dec distribution_density term_eval
+    satisfies update_real update_real_values real_program_values c_and c_not c_lt
+    c_true].
+  apply MeasureIntegration.ConcreteMeasure.expectation_ext.
   intro threshold.
-  f_equal.
-  apply real_integral_extensional.
+  apply MeasureIntegration.ConcreteMeasure.expectation_ext.
   intro noisy1.
-  f_equal.
-  apply real_integral_extensional.
+  apply MeasureIntegration.ConcreteMeasure.expectation_ext.
   intro noisy2.
-  f_equal.
-  apply real_indicator_extensional.
+  expose_construct_indicator; apply real_indicator_extensional.
   repeat match goal with
   | |- context [bool_program_var_eq_dec ?x ?y] =>
       destruct (bool_program_var_eq_dec x y); try congruence
@@ -1268,7 +1373,7 @@ Proof.
   end.
   cbn [satisfies c_and c_not c_true term_eval update_real
     update_real_values real_program_values].
-  tauto.
+  mathcomp_tauto.
 Qed.
 
 Lemma wp_outer_zero_construct_eval :
@@ -1280,27 +1385,27 @@ Proof.
     query_distribution, first_comparison, bot_top,
     q1, threshold, noisy1, above1,
     out1, out2.
-  cbn [subst_bool_pconstruct subst_bool_cformula
+  cbn [subst_bool_pconstruct subst_bool_pconstruct_fuel subst_bool_cformula
     condition_pconstruct condition_pconstruct_fuel
     cformula_real_program_vars pconstruct_real_program_vars
     distribution_real_program_vars term_real_program_vars pconstruct_size
     List.in_dec real_program_var_eq_dec bool_program_var_eq_dec
     q_eval distribution_density term_eval satisfies update_real
     update_real_values real_program_values c_and c_not c_lt c_true].
-  transitivity (real_integral (fun _ : R => 0%R)).
-  - apply real_integral_extensional.
-    intro threshold.
-    match goal with
-    | |- ?coefficient * ?inner = 0 =>
-        enough (Hinner : inner = 0%R) by (rewrite Hinner; ring)
-    end.
-    transitivity (real_integral (fun _ : R => 0%R)).
-    + apply real_integral_extensional.
-      intro noisy1.
-      f_equal.
-      rewrite real_indicator_false.
-      * ring.
-      * repeat match goal with
+  (** Recover the event-mask interface after reducing a construct leaf. *)
+  repeat rewrite (FunctionalExtensionality.functional_extensionality
+    _ _ (formula_indicatorE _)).
+  cbn [subst_bool_pconstruct subst_bool_pconstruct_fuel subst_bool_cformula condition_pconstruct
+    condition_pconstruct_fuel cformula_real_program_vars pconstruct_real_program_vars
+    distribution_real_program_vars term_real_program_vars pconstruct_size List.in_dec
+    real_program_var_eq_dec bool_program_var_eq_dec distribution_density term_eval
+    satisfies update_real update_real_values real_program_values c_and c_not c_lt
+    c_true].
+  (* The zero reward integrates to zero under every sampling measure. *)
+  zero_sampling_expectation; intro threshold.
+  zero_sampling_expectation; intro noisy1.
+  expose_construct_indicator; apply real_indicator_false.
+  repeat match goal with
         | |- context [bool_program_var_eq_dec ?x ?y] =>
             destruct (bool_program_var_eq_dec x y); try congruence
         end.
@@ -1312,9 +1417,7 @@ Proof.
         end.
         cbn [satisfies c_and c_not c_true term_eval update_real
           update_real_values real_program_values].
-        tauto.
-    + apply real_integral_zero.
-  - apply real_integral_zero.
+        mathcomp_tauto.
 Qed.
 
 Lemma wp_inner_zero_construct_eval :
@@ -1326,34 +1429,28 @@ Proof.
     query_distribution, first_comparison, second_comparison,
     bot_top, q1, q2, threshold, noisy1,
     noisy2, above1, above2, out1, out2.
-  cbn [subst_bool_pconstruct subst_bool_cformula
+  cbn [subst_bool_pconstruct subst_bool_pconstruct_fuel subst_bool_cformula
     condition_pconstruct condition_pconstruct_fuel
     cformula_real_program_vars pconstruct_real_program_vars
     distribution_real_program_vars term_real_program_vars pconstruct_size
     List.in_dec real_program_var_eq_dec bool_program_var_eq_dec
     q_eval distribution_density term_eval satisfies update_real
     update_real_values real_program_values c_and c_not c_lt c_true].
-  transitivity (real_integral (fun _ : R => 0%R)).
-  - apply real_integral_extensional.
-    intro threshold.
-    match goal with
-    | |- ?coefficient * ?inner = 0 =>
-        enough (Hinner : inner = 0%R) by (rewrite Hinner; ring)
-    end.
-    transitivity (real_integral (fun _ : R => 0%R)).
-    + apply real_integral_extensional.
-      intro noisy1.
-      match goal with
-      | |- ?coefficient * ?inner = 0 =>
-          enough (Hinner : inner = 0%R) by (rewrite Hinner; ring)
-      end.
-      transitivity (real_integral (fun _ : R => 0%R)).
-      * apply real_integral_extensional.
-        intro noisy2.
-        f_equal.
-        rewrite real_indicator_false.
-        -- ring.
-        -- repeat match goal with
+  (** Recover the event-mask interface after reducing a construct leaf. *)
+  repeat rewrite (FunctionalExtensionality.functional_extensionality
+    _ _ (formula_indicatorE _)).
+  cbn [subst_bool_pconstruct subst_bool_pconstruct_fuel subst_bool_cformula condition_pconstruct
+    condition_pconstruct_fuel cformula_real_program_vars pconstruct_real_program_vars
+    distribution_real_program_vars term_real_program_vars pconstruct_size List.in_dec
+    real_program_var_eq_dec bool_program_var_eq_dec distribution_density term_eval
+    satisfies update_real update_real_values real_program_values c_and c_not c_lt
+    c_true].
+  (* The zero reward integrates to zero under every sampling measure. *)
+  zero_sampling_expectation; intro threshold.
+  zero_sampling_expectation; intro noisy1.
+  zero_sampling_expectation; intro noisy2.
+  expose_construct_indicator; apply real_indicator_false.
+  repeat match goal with
            | |- context [bool_program_var_eq_dec ?x ?y] =>
                destruct (bool_program_var_eq_dec x y); try congruence
            end.
@@ -1365,10 +1462,7 @@ Proof.
            end.
            cbn [satisfies c_and c_not c_true term_eval update_real
              update_real_values real_program_values].
-           tauto.
-      * apply real_integral_zero.
-    + apply real_integral_zero.
-  - apply real_integral_zero.
+           mathcomp_tauto.
 Qed.
 
 Lemma symbolic_pre_implies_wp :
@@ -1378,7 +1472,7 @@ Lemma symbolic_pre_implies_wp :
 Proof.
   intros epsilon p.
   unfold pformula_valid.
-  intro ps.
+  intros ps Hps_admissible.
   rewrite generic_pre_shape.
   assert (Houter_zero :
     expectation (pstate_measure ps)
@@ -1411,6 +1505,11 @@ Proof.
   }
   unfold symbolic_pre, normalized.
   cbn [p_and p_not p_eq psatisfies pterm_eval] in *.
+  clear Hps_admissible.
+  (* Eliminate zero branches before arithmetic automation inspects the
+     concrete integral expressions. *)
+  rewrite Houter_zero, Hinner_zero, Hpath.
+  clear Houter_zero Hinner_zero Hpath.
   intuition lra.
 Qed.
 
@@ -1430,8 +1529,9 @@ Proof.
     exact Hepsilon.
   - unfold pformula_valid, output_probability,
       event_probability, bot_top_probability.
-    intro ps.
+    intros ps Hps_admissible.
     cbn [p_eq p_and p_not psatisfies pterm_eval] in *.
+    clear Hps_admissible.
     intuition lra.
 Qed.
 
@@ -1502,7 +1602,7 @@ Lemma normalized_implies_concrete_pre :
 Proof.
   intros epsilon Hepsilon.
   unfold pformula_valid.
-  intro ps.
+  intros ps Hps_admissible.
   rewrite symbolic_concrete_pre_shape.
   rewrite path_substitution_01.
   assert (Hpath :
@@ -1516,7 +1616,7 @@ Proof.
         (fun _ : state => closed_form_probability epsilon)).
     - apply expectation_extensional.
       intro v.
-      rewrite path_integral_01_eval.
+      rewrite path_integral_01_eval by assumption.
       apply nested_integral_value.
       exact Hepsilon.
     - apply expectation_constant.
@@ -1527,14 +1627,14 @@ Proof.
   assert (Hmass_upper :
     (expectation (pstate_measure ps) (q_eval [[ indicator[true] ]]) <= 1)%R).
   {
-    apply NNPP; intro Hnot.
+    apply (proj1 (boolp.not_notP _)); intro Hnot.
     apply Hnormalized.
     intro Hupper; contradiction.
   }
   assert (Hmass_lower :
     (1 <= expectation (pstate_measure ps) (q_eval [[ indicator[true] ]]))%R).
   {
-    apply NNPP; intro Hnot.
+    apply (proj1 (boolp.not_notP _)); intro Hnot.
     apply Hnormalized.
     intros Hupper Hlower; contradiction.
   }
@@ -1555,7 +1655,7 @@ Proof.
     (closed_form_probability epsilon <= expectation (pstate_measure ps)
       (q_eval (path_integral_01 epsilon)))%R)
     by lra.
-  tauto.
+  mathcomp_tauto.
 Qed.
 
 Theorem run_01_bot_top_probability :
@@ -1574,7 +1674,7 @@ Proof.
   - apply symbolic_concrete_hoare.
     exact Hepsilon.
   - unfold pformula_valid.
-    intro ps; cbn [psatisfies]; tauto.
+    intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
 Qed.
 
 (** * The concrete input [[1, 1]]
@@ -1653,7 +1753,7 @@ Proof.
           rewrite (real_indicator_true _ Hle).
           reflexivity.
         * rewrite (real_indicator_false
-            (noisy1 < threshold /\ threshold <= noisy2)%R) by tauto.
+            (noisy1 < threshold /\ threshold <= noisy2)%R) by mathcomp_tauto.
           rewrite (real_indicator_false (threshold <= noisy2)%R) by exact Hnle.
           ring.
       + unfold laplace_density_R.
@@ -1665,7 +1765,7 @@ Proof.
       + apply real_integral_extensional.
         intro noisy2.
         rewrite (real_indicator_false
-          (noisy1 < threshold /\ threshold <= noisy2)%R) by tauto.
+          (noisy1 < threshold /\ threshold <= noisy2)%R) by mathcomp_tauto.
         ring.
       + rewrite real_integral_zero; ring.
   }
@@ -1697,7 +1797,11 @@ Proof.
             laplace_density_R 1 (4 / epsilon) noisy1 *
             real_indicator (noisy1 < threshold)%R)) *
           (1 - laplace_cdf 1 (4 / epsilon) threshold))%R.
-      + rewrite <- real_integral_scale_right.
+      + rewrite <- real_integral_scale_right by
+          (apply real_integrable_mask_right;
+           [first [apply real_measurable_below | apply real_measurable_above] |
+            unfold laplace_density_R; apply real_integrable_laplace;
+            apply Rdiv_lt_0_compat; lra]).
         apply real_integral_extensional.
         intro noisy1.
         ring.
@@ -1868,6 +1972,22 @@ Proof.
     field.
 Qed.
 
+(** The piecewise exponential expansion also proves absolute integrability
+    on this region, independently of its closed-form integral value. *)
+Lemma integral_rate_11_below_integrable : forall rate : R, 0 < rate ->
+  real_integrable (fun threshold => real_indicator (threshold < 0) *
+    threshold_integrand_rate_11 rate threshold).
+Proof.
+  intros rate Hrate.
+  apply real_integrable_mask_ext with (g := (fun threshold =>
+        ((rate / 2) * exp (- rate)) *
+          exp ((3 * rate) * threshold) +
+        (- rate / 4 * exp (- 2 * rate)) *
+          exp ((4 * rate) * threshold))).
+  - intros threshold Hthreshold; apply integrand_rate_11_below_pointwise; exact Hthreshold.
+  - region_integrable.
+Qed.
+
 Lemma integral_rate_11_below :
   forall rate : R,
     (0 < rate)%R ->
@@ -1892,12 +2012,27 @@ Proof.
       reflexivity.
     + rewrite (real_indicator_false (threshold < 0)%R) by exact Hthreshold.
       ring.
-  - rewrite real_integral_below_add.
-    rewrite !real_integral_below_scale.
+  - rewrite real_integral_below_add by region_integrable.
+    rewrite !real_integral_below_scale by region_integrable.
     rewrite (real_integral_exp_below 0 (3 * rate)) by lra.
     rewrite (real_integral_exp_below 0 (4 * rate)) by lra.
     rewrite !Rmult_0_r, !exp_0.
     field; lra.
+Qed.
+
+(** The piecewise exponential expansion also proves absolute integrability
+    on this region, independently of its closed-form integral value. *)
+Lemma integral_rate_11_between_integrable : forall rate : R, 0 < rate ->
+  real_integrable (fun threshold => real_indicator (0 <= threshold < 1) *
+    threshold_integrand_rate_11 rate threshold).
+Proof.
+  intros rate Hrate.
+  apply real_integrable_mask_ext with (g := (fun threshold =>
+        ((rate / 2) * exp (- rate)) *
+          exp ((- rate) * threshold) +
+        (- rate / 4) * exp (- 2 * rate))).
+  - intros threshold Hthreshold; apply integrand_rate_11_between_pointwise; exact Hthreshold.
+  - region_integrable.
 Qed.
 
 Lemma integral_rate_11_between :
@@ -1917,7 +2052,7 @@ Proof.
   - unfold real_integral_between.
     apply real_integral_extensional.
     intro threshold.
-    destruct (excluded_middle_informative (0 <= threshold < 1)%R)
+    destruct (boolp.pselect (0 <= threshold < 1)%R)
       as [Hthreshold | Hthreshold].
     + rewrite (real_indicator_true _ Hthreshold).
       rewrite (integrand_rate_11_between_pointwise
@@ -1926,8 +2061,8 @@ Proof.
     + rewrite (real_indicator_false (0 <= threshold < 1)%R) by
         exact Hthreshold.
       ring.
-  - rewrite real_integral_between_add.
-    rewrite real_integral_between_scale.
+  - rewrite real_integral_between_add by region_integrable.
+    rewrite real_integral_between_scale by region_integrable.
     rewrite (real_integral_exp_between 0 1 (- rate)) by lra.
     rewrite (real_integral_between_constant 0 1
       ((- rate / 4) * exp (- 2 * rate))) by lra.
@@ -1940,6 +2075,22 @@ Proof.
     }
     rewrite <- Hexp2.
     field; lra.
+Qed.
+
+(** The piecewise exponential expansion also proves absolute integrability
+    on this region, independently of its closed-form integral value. *)
+Lemma integral_rate_11_above_integrable : forall rate : R, 0 < rate ->
+  real_integrable (fun threshold => real_indicator (1 <= threshold) *
+    threshold_integrand_rate_11 rate threshold).
+Proof.
+  intros rate Hrate.
+  apply real_integrable_mask_ext with (g := (fun threshold =>
+        ((rate / 2) * exp rate) *
+          exp ((- 3 * rate) * threshold) +
+        (- rate / 4 * exp (2 * rate)) *
+          exp ((- 4 * rate) * threshold))).
+  - intros threshold Hthreshold; apply integrand_rate_11_above_pointwise; exact Hthreshold.
+  - region_integrable.
 Qed.
 
 Lemma integral_rate_11_above :
@@ -1966,8 +2117,8 @@ Proof.
       reflexivity.
     + rewrite (real_indicator_false (1 <= threshold)%R) by exact Hthreshold.
       ring.
-  - rewrite real_integral_above_add.
-    rewrite !real_integral_above_scale.
+  - rewrite real_integral_above_add by region_integrable.
+    rewrite !real_integral_above_scale by region_integrable.
     rewrite (real_integral_exp_above 1 (- 3 * rate)) by lra.
     rewrite (real_integral_exp_above 1 (- 4 * rate)) by lra.
     rewrite !Rmult_1_r.
@@ -2000,7 +2151,10 @@ Lemma threshold_integral_rate_11 :
 Proof.
   intros rate Hrate.
   rewrite (real_integral_split_three
-    (threshold_integrand_rate_11 rate) 0 1) by lra.
+    (threshold_integrand_rate_11 rate) 0 1) by
+    (first [lra | apply integral_rate_11_below_integrable; assumption
+      | apply integral_rate_11_between_integrable; assumption
+      | apply integral_rate_11_above_integrable; assumption]).
   rewrite (integral_rate_11_below rate Hrate).
   rewrite (integral_rate_11_between rate Hrate).
   rewrite (integral_rate_11_above rate Hrate).
@@ -2072,14 +2226,22 @@ Qed.
 
 Lemma path_integral_11_eval :
   forall (epsilon : R) (v : state),
+    (0 < epsilon)%R ->
     q_eval (path_integral_11 epsilon) v = nested_integral_11 epsilon.
 Proof.
-  intros epsilon v.
+  intros epsilon v Hepsilon.
   unfold path_integral_11, nested_integral_11,
     laplace_density_R, threshold_distribution,
     query_distribution, path_event, c_and, c_not, c_lt.
+  repeat rewrite q_eval_integral_density by
+    (intro w; cbn [distribution_valid term_eval];
+     first [assumption | lra | apply Rdiv_lt_0_compat; lra]).
   cbn [q_eval distribution_density term_eval satisfies update_real
     real_program_values].
+  (** Recover the event-mask interface after reducing a construct leaf. *)
+  repeat rewrite (FunctionalExtensionality.functional_extensionality
+    _ _ (formula_indicatorE _)).
+  cbn [distribution_density term_eval satisfies update_real real_program_values].
   apply real_integral_extensional.
   intro threshold.
   f_equal.
@@ -2089,7 +2251,7 @@ Proof.
   apply real_integral_extensional.
   intro noisy2.
   f_equal.
-  apply real_indicator_extensional.
+  expose_construct_indicator; apply real_indicator_extensional.
   unfold SVT_notation.threshold, SVT_notation.noisy1,
     SVT_notation.noisy2.
   cbn [satisfies c_not term_eval update_real update_real_values
@@ -2172,7 +2334,7 @@ Lemma normalized_implies_concrete_pre_11 :
 Proof.
   intros epsilon Hepsilon.
   unfold pformula_valid.
-  intro ps.
+  intros ps Hps_admissible.
   rewrite symbolic_concrete_pre_11_shape.
   rewrite path_substitution_11.
   assert (Hpath :
@@ -2186,7 +2348,7 @@ Proof.
         (fun _ : state => closed_form_probability_11 epsilon)).
     - apply expectation_extensional.
       intro v.
-      rewrite path_integral_11_eval.
+      rewrite path_integral_11_eval by assumption.
       apply nested_integral_value_11.
       exact Hepsilon.
     - apply expectation_constant.
@@ -2197,14 +2359,14 @@ Proof.
   assert (Hmass_upper :
     (expectation (pstate_measure ps) (q_eval [[ indicator[true] ]]) <= 1)%R).
   {
-    apply NNPP; intro Hnot.
+    apply (proj1 (boolp.not_notP _)); intro Hnot.
     apply Hnormalized.
     intro Hupper; contradiction.
   }
   assert (Hmass_lower :
     (1 <= expectation (pstate_measure ps) (q_eval [[ indicator[true] ]]))%R).
   {
-    apply NNPP; intro Hnot.
+    apply (proj1 (boolp.not_notP _)); intro Hnot.
     apply Hnormalized.
     intros Hupper Hlower; contradiction.
   }
@@ -2227,7 +2389,7 @@ Proof.
       expectation (pstate_measure ps)
         (q_eval (path_integral_11 epsilon)))%R)
     by lra.
-  tauto.
+  mathcomp_tauto.
 Qed.
 
 Theorem run_11_bot_top_probability :
@@ -2247,5 +2409,5 @@ Proof.
   - apply symbolic_concrete_hoare_11.
     exact Hepsilon.
   - unfold pformula_valid.
-    intro ps; cbn [psatisfies]; tauto.
+    intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
 Qed.

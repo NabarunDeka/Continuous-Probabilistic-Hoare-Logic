@@ -1,0 +1,17 @@
+opam-version: "2.0"
+synopsis: "Continuous Probabilistic Hoare Logic with MathComp Analysis"
+maintainer: "CPHL maintainers"
+authors: "CPHL maintainers"
+license: "MIT"
+# Keep the tested direct versions; toolchain.opam-switch pins the full closure.
+depends: [
+  "ocaml" {= "4.14.1"}
+  "rocq-core" {= "9.0.0"}
+  "coq-core" {= "9.0.0"}
+  "rocq-stdlib" {= "9.1.0"}
+  "rocq-mathcomp-analysis" {= "1.18.0"}
+  "rocq-mathcomp-analysis-stdlib" {= "1.18.0"}
+  "rocq-mathcomp-ssreflect" {= "2.6.0"}
+  "rocq-hierarchy-builder" {= "1.10.3"}
+  "rocq-elpi" {= "3.5.1"}
+]
