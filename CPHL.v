@@ -8,7 +8,6 @@ From Stdlib Require Import Reals.
 From Stdlib Require Import Strings.String.
 From Stdlib Require Import Bool.Bool.
 From Stdlib Require Import Ascii.
-From Stdlib Require Import ClassicalDescription.
 From Stdlib Require Import Lra.
 From Stdlib Require Import Lia.
 From Stdlib Require Import FunctionalExtensionality.
@@ -145,10 +144,63 @@ Proof.
   split; intro H; exact H.
 Qed.
 
-(** Commands need a Boolean truth value for a classical guard. This merely
-    reifies [satisfies]; it does not change the existing logical semantics. *)
+(** Evaluate formula syntax directly: Boolean coordinates already have truth
+    values, real atoms use Stdlib's real comparison, and implication combines
+    the recursive results. No decision of an arbitrary proposition is used.
+    Real comparison itself still relies on the classical real library. *)
+Fixpoint cformula_eval_syntax (gamma : CFormula) (v : state) : bool :=
+  match gamma with
+  | FProgBool b => bool_program_values v b
+  | FLogicBool b => bool_logic_values v b
+  | FLe t1 t2 => if Rle_dec (term_eval t1 v) (term_eval t2 v) then true else false
+  | FFalse => false
+  | FImpl gamma1 gamma2 =>
+      implb (cformula_eval_syntax gamma1 v) (cformula_eval_syntax gamma2 v)
+  end.
+
+(** Structural correctness lets later proofs reason through [satisfies]
+    instead of unfolding the evaluator or invoking general excluded middle. *)
+Lemma cformula_eval_syntax_spec gamma v :
+  cformula_eval_syntax gamma v = true <-> satisfies v gamma.
+Proof.
+  induction gamma as [b | b | t1 t2 | | gamma1 IH1 gamma2 IH2];
+    cbn [cformula_eval_syntax satisfies].
+  - reflexivity.
+  - reflexivity.
+  - destruct (Rle_dec (term_eval t1 v) (term_eval t2 v)) as [Hle | Hnle].
+    + split; intro H; [exact Hle | reflexivity].
+    + split; intro H; [discriminate H | contradiction].
+  - split; intro H; [discriminate H | contradiction].
+  - rewrite implb_true_iff, IH1, IH2; reflexivity.
+Qed.
+
+(** The false case is the complementary interface needed for guard splits. *)
+Lemma cformula_eval_syntax_false gamma v :
+  cformula_eval_syntax gamma v = false <-> ~ satisfies v gamma.
+Proof.
+  rewrite <- not_true_iff_false, cformula_eval_syntax_spec; reflexivity.
+Qed.
+
+(** Formula-specific informative decidability follows from the computed
+    Boolean and its specification, without deciding an arbitrary Prop. *)
+Definition cformula_satisfies_dec gamma v :
+  {satisfies v gamma} + {~ satisfies v gamma}.
+Proof.
+  destruct (cformula_eval_syntax gamma v) eqn:Hvalue.
+  - left; apply (proj1 (cformula_eval_syntax_spec gamma v)); exact Hvalue.
+  - right; apply (proj1 (cformula_eval_syntax_false gamma v)); exact Hvalue.
+Defined.
+
+(** Keep the public guard interface while routing Boolean assignment,
+    conditionals, and loop tests through the syntax-directed evaluator. *)
 Definition cformula_eval_bool (gamma : CFormula) (v : state) : bool :=
-  if excluded_middle_informative (satisfies v gamma) then true else false.
+  cformula_eval_syntax gamma v.
+
+(** The shared command interface now agrees by definition. Comparison with
+    the previous Prop-based implementation is retained in the regressions. *)
+Lemma cformula_eval_syntax_agrees gamma v :
+  cformula_eval_syntax gamma v = cformula_eval_bool gamma v.
+Proof. reflexivity. Qed.
 
 Module ValuationSpace.
 
@@ -252,7 +304,8 @@ elim: gamma => [b|b|t1 t2| |g1 m1 g2 m2].
     apply propext.
     change ((satisfies v g1 -> satisfies v g2) <->
             (~ satisfies v g1 \/ satisfies v g2)).
-    destruct (Classical_Prop.classic (satisfies v g1)); tauto.
+    (** Implication needs only the antecedent's syntax-directed decision. *)
+    destruct (cformula_satisfies_dec g1 v); tauto.
   exact: measurableU (measurableC m1) m2.
 Qed.
 
@@ -429,17 +482,17 @@ Definition distribution_valid (d : Distribution) (v : state) : Prop :=
       (0 < term_eval standard_deviation v)%R
   end.
 
-(** [real_indicator] is the real-valued characteristic function of a Rocq
-    proposition.  Classical excluded middle is used only to choose its value. *)
+(** General measurable events need a decision on a proposition. Use the
+    same classical interface as MathComp's measure theory for this choice. *)
 Definition real_indicator (P : Prop) : R :=
-  if excluded_middle_informative P then 1%R else 0%R.
+  if boolp.pselect P then 1%R else 0%R.
 
 Lemma real_indicator_true :
   forall P : Prop, P -> real_indicator P = 1%R.
 Proof.
   intros P HP.
   unfold real_indicator.
-  destruct (excluded_middle_informative P); [reflexivity | contradiction].
+  destruct (boolp.pselect P); [reflexivity | contradiction].
 Qed.
 
 Lemma real_indicator_false :
@@ -447,7 +500,7 @@ Lemma real_indicator_false :
 Proof.
   intros P HP.
   unfold real_indicator.
-  destruct (excluded_middle_informative P); [contradiction | reflexivity].
+  destruct (boolp.pselect P); [contradiction | reflexivity].
 Qed.
 
 Lemma real_indicator_extensional :
@@ -455,7 +508,7 @@ Lemma real_indicator_extensional :
     (P <-> Q) -> real_indicator P = real_indicator Q.
 Proof.
   intros P Q Hequiv.
-  destruct (excluded_middle_informative P) as [HP | HnP].
+  destruct (boolp.pselect P) as [HP | HnP].
   - rewrite (real_indicator_true P HP).
     rewrite (real_indicator_true Q (proj1 Hequiv HP)).
     reflexivity.
@@ -463,6 +516,33 @@ Proof.
     rewrite (real_indicator_false Q).
     + reflexivity.
     + intro HQ; apply HnP; apply (proj2 Hequiv); exact HQ.
+Qed.
+
+(** Formula indicators inspect syntax, just like command guards. The bridge
+    below preserves the Prop-based interface used in analytical proofs. *)
+Definition formula_indicator (gamma : CFormula) (v : state) : R :=
+  if cformula_eval_syntax gamma v then 1%R else 0%R.
+
+Lemma formula_indicator_true gamma v :
+  satisfies v gamma -> formula_indicator gamma v = 1%R.
+Proof.
+  intro H; unfold formula_indicator.
+  rewrite (proj2 (cformula_eval_syntax_spec gamma v) H); reflexivity.
+Qed.
+
+Lemma formula_indicator_false gamma v :
+  ~ satisfies v gamma -> formula_indicator gamma v = 0%R.
+Proof.
+  intro H; unfold formula_indicator.
+  rewrite (proj2 (cformula_eval_syntax_false gamma v) H); reflexivity.
+Qed.
+
+Lemma formula_indicatorE gamma v :
+  formula_indicator gamma v = real_indicator (satisfies v gamma).
+Proof.
+  destruct (cformula_satisfies_dec gamma v) as [H | H].
+  - rewrite (formula_indicator_true _ _ H), (real_indicator_true _ H); reflexivity.
+  - rewrite (formula_indicator_false _ _ H), (real_indicator_false _ H); reflexivity.
 Qed.
 
 (** These are the standard density expressions.  They are total Rocq
@@ -670,11 +750,17 @@ Definition real_integral_above (a : R) (f : R -> R) : R :=
     the integrand measurable and bounded, justifying this real expectation. *)
 Fixpoint q_eval (q : PConstruct) (v : state) : R :=
   match q with
-  | QIndicator gamma => real_indicator (satisfies v gamma)
+  | QIndicator gamma => formula_indicator gamma v
   | QIntegral x d q' =>
       @ConcreteMeasure.expectation _ RealIntegration.Space (distribution_measure d v)
         (fun k => q_eval q' (update_real v x k))
   end.
+
+(** Clients can reason about satisfaction without unfolding the syntax
+    evaluator. This equality also holds under integral binders. *)
+Lemma q_eval_indicatorE gamma v :
+  q_eval (QIndicator gamma) v = real_indicator (satisfies v gamma).
+Proof. exact (formula_indicatorE gamma v). Qed.
 
 (** Real expectations are concrete; linearity carries the integrability
     obligations that were absent from the former axioms. *)
@@ -696,18 +782,23 @@ Lemma indicatorE {T : Type} (A : T -> Prop) v :
   real_indicator (A v) = numfun.indic A v.
 Proof.
 rewrite /real_indicator numfun.indicE.
-case: (excluded_middle_informative (A v)) => h.
+case: (boolp.pselect (A v)) => h.
 - by rewrite (mem_set h).
 - have hn : v \notin (A : set T) by apply/negP => /set_mem; exact: h.
   by rewrite (negbTE hn).
 Qed.
+
+(** Bridge the syntax indicator directly to the library's event indicator. *)
+Lemma q_indicatorE gamma v :
+  q_eval (QIndicator gamma) v = numfun.indic (formula_event gamma) v.
+Proof. rewrite q_eval_indicatorE; exact: indicatorE. Qed.
 
 Lemma indicator_expectation (mu : StateMeasure.carrier) gamma :
   expectation mu (q_eval (QIndicator gamma)) =
     measure_of mu (formula_assertion gamma).
 Proof.
 transitivity (ConcreteMeasure.expectation mu (numfun.indic (formula_event gamma))).
-- apply: ConcreteMeasure.expectation_ext => v; exact: indicatorE.
+- apply: ConcreteMeasure.expectation_ext => v; exact: q_indicatorE.
 - apply: ConcreteMeasure.expectation_indicator.
   exact: measurable_formula_event.
 Qed.
@@ -946,10 +1037,8 @@ Module CommandSemantics.
 
   Lemma cformula_eval_bool_spec gamma v :
     cformula_eval_bool gamma v = true <-> satisfies v gamma.
-  Proof.
-  rewrite /cformula_eval_bool.
-  case: (excluded_middle_informative (satisfies v gamma)) => h; split=> //.
-  Qed.
+  (** Preserve the specification used by measurable kernels and clients. *)
+  Proof. exact: cformula_eval_syntax_spec. Qed.
 
   Lemma measurable_cformula_eval_bool gamma :
     measurable_fun [set: Valuation] (cformula_eval_bool gamma).
@@ -2394,7 +2483,9 @@ Proof.
   {
     eapply HConseq with (eta1 := eta) (eta2 := eta).
     - unfold pformula_valid.
-      intros ps Hsub; cbn [psatisfies p_and p_not]; tauto.
+      intros ps Hsub Hconj.
+      (** Project the encoded conjunction through MathComp's logical laws. *)
+      exact (proj1 (proj1 (boolp.not_implyP _ _) Hconj)).
     - exact Hraw.
     - unfold pformula_valid.
       intros ps Hsub; cbn [psatisfies]; tauto.
@@ -2404,7 +2495,10 @@ Proof.
   {
     eapply HConseq with (eta1 := rigid) (eta2 := rigid).
     - unfold pformula_valid.
-      intros ps Hsub; cbn [psatisfies p_and p_not]; tauto.
+      intros ps Hsub Hconj.
+      (** The second projection is doubly negated by the implication encoding. *)
+      exact (proj1 (boolp.not_notP _)
+        (proj2 (proj1 (boolp.not_implyP _ _) Hconj))).
     - apply HFree.
       unfold rigid.
       cbn [p_eq p_and p_not pformula_analytical pterm_analytical].
