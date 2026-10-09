@@ -3,7 +3,7 @@
     derivability-to-validity theorem is assumed. *)
 From Stdlib Require Import Reals.
 Require Import CPHL Soundness.SemanticValidity
-  Soundness.StructuralRules Soundness.AtomicRules Soundness.SplitRules
+  Soundness.StructuralRules Soundness.AtomicRules Soundness.InvalidSampling Soundness.SplitRules
   Soundness.WhileNonentry Soundness.WhileUpper Soundness.WhileLower
   Soundness.WhileExact.
 
@@ -21,6 +21,7 @@ Proof.
   - apply hoare_valid_bool_assign.
   - apply hoare_valid_bool_toss; assumption.
   - eapply hoare_valid_real_sample; eassumption.
+  - eapply hoare_valid_real_sample_invalid; eassumption.
   - eapply hoare_valid_if_le; eassumption.
   - eapply hoare_valid_if_ge; eassumption.
   - eapply hoare_valid_if_eq; eassumption.

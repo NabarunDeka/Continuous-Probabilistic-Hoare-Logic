@@ -2283,39 +2283,49 @@ Inductive hoare_derivable : PFormula -> Cmd -> PFormula -> Prop :=
           (PFImpl pre
             (p_almost_sure (distribution_valid_formula d))) ->
         hoare_derivable pre (CRealSample x d) eta
+  (** Invalid parameters almost surely annihilate the input measure. *)
+  | HRealSampleInvalid :
+      forall (pre : PFormula) (x : RealProgramVar) (d : Distribution),
+        pformula_valid
+          (PFImpl pre
+            (p_almost_sure (c_not (distribution_valid_formula d)))) ->
+        hoare_derivable pre (CRealSample x d)
+          (p_eq (PExpect (QIndicator c_true)) (PConst 0%R))
+  (** IF and SUM combine expectations of any bounded probability construct,
+      including nested integrals. Indicators are instances of these rules. *)
   | HIfLe :
-      forall (eta1 eta2 : PFormula) (guard gamma : CFormula)
+      forall (eta1 eta2 : PFormula) (guard : CFormula) (q : PConstruct)
         (y1 y2 : ProbLogicVar) (s1 s2 : Cmd),
         hoare_derivable eta1 s1
-          (PFLe (PVar y1) (PExpect (QIndicator gamma))) ->
+          (PFLe (PVar y1) (PExpect q)) ->
         hoare_derivable eta2 s2
-          (PFLe (PVar y2) (PExpect (QIndicator gamma))) ->
+          (PFLe (PVar y2) (PExpect q)) ->
         hoare_derivable (if_precondition eta1 eta2 guard)
           (CIf guard s1 s2)
           (PFLe (PAdd (PVar y1) (PVar y2))
-            (PExpect (QIndicator gamma)))
+            (PExpect q))
   | HIfGe :
-      forall (eta1 eta2 : PFormula) (guard gamma : CFormula)
+      forall (eta1 eta2 : PFormula) (guard : CFormula) (q : PConstruct)
         (y1 y2 : ProbLogicVar) (s1 s2 : Cmd),
         hoare_derivable eta1 s1
-          (PFLe (PExpect (QIndicator gamma)) (PVar y1)) ->
+          (PFLe (PExpect q) (PVar y1)) ->
         hoare_derivable eta2 s2
-          (PFLe (PExpect (QIndicator gamma)) (PVar y2)) ->
+          (PFLe (PExpect q) (PVar y2)) ->
         hoare_derivable (if_precondition eta1 eta2 guard)
           (CIf guard s1 s2)
-          (PFLe (PExpect (QIndicator gamma))
+          (PFLe (PExpect q)
             (PAdd (PVar y1) (PVar y2)))
   | HIfEq :
-      forall (eta1 eta2 : PFormula) (guard gamma : CFormula)
+      forall (eta1 eta2 : PFormula) (guard : CFormula) (q : PConstruct)
         (y1 y2 : ProbLogicVar) (s1 s2 : Cmd),
         hoare_derivable eta1 s1
-          (p_eq (PVar y1) (PExpect (QIndicator gamma))) ->
+          (p_eq (PVar y1) (PExpect q)) ->
         hoare_derivable eta2 s2
-          (p_eq (PVar y2) (PExpect (QIndicator gamma))) ->
+          (p_eq (PVar y2) (PExpect q)) ->
         hoare_derivable (if_precondition eta1 eta2 guard)
           (CIf guard s1 s2)
           (p_eq (PAdd (PVar y1) (PVar y2))
-            (PExpect (QIndicator gamma)))
+            (PExpect q))
   | HElimv :
       forall (eta1 eta2 : PFormula) (y : ProbLogicVar) (p : Pterm) (s : Cmd),
         hoare_derivable (p_and eta1 (p_eq (PVar y) p)) s eta2 ->
@@ -2346,26 +2356,26 @@ Inductive hoare_derivable : PFormula -> Cmd -> PFormula -> Prop :=
   (** SUM runs the same command on two disjoint input pieces. As in [HIfLe]
       and [HIfGe], Le/Ge name the comparison with the bound on the left. *)
   | HSumLe :
-      forall (eta1 eta2 : PFormula) (gamma1 gamma2 gamma : CFormula)
+      forall (eta1 eta2 : PFormula) (gamma1 gamma2 : CFormula) (q : PConstruct)
         (y1 y2 : ProbLogicVar) (s : Cmd),
         cformula_valid (c_not (c_and gamma1 gamma2)) ->
         hoare_derivable (p_and eta1 (p_almost_sure gamma1)) s
-          (PFLe (PVar y1) (PExpect (QIndicator gamma))) ->
+          (PFLe (PVar y1) (PExpect q)) ->
         hoare_derivable (p_and eta2 (p_almost_sure gamma2)) s
-          (PFLe (PVar y2) (PExpect (QIndicator gamma))) ->
+          (PFLe (PVar y2) (PExpect q)) ->
         hoare_derivable (sum_precondition eta1 eta2 gamma1 gamma2) s
           (PFLe (PAdd (PVar y1) (PVar y2))
-            (PExpect (QIndicator gamma)))
+            (PExpect q))
   | HSumGe :
-      forall (eta1 eta2 : PFormula) (gamma1 gamma2 gamma : CFormula)
+      forall (eta1 eta2 : PFormula) (gamma1 gamma2 : CFormula) (q : PConstruct)
         (y1 y2 : ProbLogicVar) (s : Cmd),
         cformula_valid (c_not (c_and gamma1 gamma2)) ->
         hoare_derivable (p_and eta1 (p_almost_sure gamma1)) s
-          (PFLe (PExpect (QIndicator gamma)) (PVar y1)) ->
+          (PFLe (PExpect q) (PVar y1)) ->
         hoare_derivable (p_and eta2 (p_almost_sure gamma2)) s
-          (PFLe (PExpect (QIndicator gamma)) (PVar y2)) ->
+          (PFLe (PExpect q) (PVar y2)) ->
         hoare_derivable (sum_precondition eta1 eta2 gamma1 gamma2) s
-          (PFLe (PExpect (QIndicator gamma))
+          (PFLe (PExpect q)
             (PAdd (PVar y1) (PVar y2)))
   | HWhileNot :
       forall (gamma beta : CFormula) (body : Cmd) (y : ProbLogicVar),

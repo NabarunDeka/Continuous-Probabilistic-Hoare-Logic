@@ -35,7 +35,7 @@ python3 build.py
 
 Importing the snapshot installs the pinned dependencies. Keep the `coq-core`
 compatibility package, which some dependencies still require. The build
-script checks all recorded versions and recompiles the 49 modules in
+script checks all recorded versions and recompiles the 51 modules in
 `_CoqProject` order. It does not install or upgrade packages.
 
 To use an existing switch with the same package versions:
@@ -67,9 +67,10 @@ Compile it using the same switch and load path as the build:
 opam exec --switch=.toolchain -- rocq compile -q -Q . "" CheckSoundness.v
 ```
 
-The examples compile with four calculation axioms in `AnalyticalCalculations.v`:
-three exponential integral identities for SVT and one quarter-disk identity
-for Monte Carlo. These are not assumptions of the general soundness theorem.
+The exponential integral identities used by SVT are proved in
+`ExponentialIntegrals.v`. One calculation axiom remains in
+`AnalyticalCalculations.v`: the quarter-disk identity for Monte Carlo.
+It is not an assumption of the general soundness theorem.
 
 ## Build diagnostics
 

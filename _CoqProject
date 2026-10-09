@@ -26,6 +26,7 @@ Soundness/AtomicRules.v
 Soundness/Conditioning.v
 Soundness/ConditioningAssertions.v
 Soundness/InputDecomposition.v
+Soundness/InvalidSampling.v
 Soundness/SplitCommandFacts.v
 Soundness/SplitRules.v
 Soundness/LoopRewards.v
@@ -44,6 +45,7 @@ Soundness/WhileExact.v
 Soundness/HoareSoundness.v
 Soundness/DensityIntegration.v
 Soundness/CalculationFacts.v
+ExponentialIntegrals.v
 AnalyticalCalculations.v
 SVT.v
 SVT_notation.v

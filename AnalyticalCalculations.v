@@ -2,7 +2,7 @@
     semantic foundation. Their analytical obligations are tracked separately;
     CPHL and Soundness must never import this file. *)
 From Stdlib Require Import Reals Lra Field Ring.
-Require Import CPHL.
+Require Import CPHL ExponentialIntegrals.
 Require Export Soundness.CalculationFacts.
 Require Import Soundness.DistributionFacts.
 (** The generic region operators now come from the concrete shared interface. *)
@@ -211,24 +211,27 @@ Proof.
 Qed.
 
 (** Closed forms for the exponential functions needed below. *)
-Axiom real_integral_exp_below :
+Lemma real_integral_exp_below :
   forall a k : R,
     (0 < k)%R ->
     real_integral_below a (fun x => exp (k * x)) =
       (exp (k * a) / k)%R.
+Proof. exact real_integral_exp_below_proved. Qed.
 
-Axiom real_integral_exp_between :
+Lemma real_integral_exp_between :
   forall a b k : R,
     (a <= b)%R ->
     k <> 0%R ->
     real_integral_between a b (fun x => exp (k * x)) =
       ((exp (k * b) - exp (k * a)) / k)%R.
+Proof. exact real_integral_exp_between_proved. Qed.
 
-Axiom real_integral_exp_above :
+Lemma real_integral_exp_above :
   forall a k : R,
     (k < 0)%R ->
     real_integral_above a (fun x => exp (k * x)) =
       (- exp (k * a) / k)%R.
+Proof. exact real_integral_exp_above_proved. Qed.
 
 (** The usual Laplace CDF, using the same [(location, scale)] convention as
     [Laplace] and [distribution_density]. *)
