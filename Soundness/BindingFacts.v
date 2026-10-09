@@ -125,7 +125,7 @@ Qed.
 Lemma distribution_measure_update_bool d v b value :
   distribution_measure d (update_bool v b value) = distribution_measure d v.
 Proof.
-  destruct d as [a c | a c | a c];
+  destruct d as [a c | a c | a c | a];
     unfold distribution_measure, DistributionSemantics.real_law;
     rewrite !term_eval_update_bool; reflexivity.
 Qed.
@@ -134,8 +134,8 @@ Lemma distribution_measure_update_real_fresh d v x r :
   ~ In x (distribution_real_program_vars d) ->
   distribution_measure d (update_real v x r) = distribution_measure d v.
 Proof.
-  destruct d as [a c | a c | a c];
-    cbn [distribution_real_program_vars]; rewrite in_app_iff; intro H;
+  destruct d as [a c | a c | a c | a];
+    cbn [distribution_real_program_vars]; rewrite ?in_app_iff; intro H;
     unfold distribution_measure, DistributionSemantics.real_law;
     rewrite !term_eval_update_real_fresh by tauto; reflexivity.
 Qed.
@@ -166,7 +166,7 @@ Lemma term_eval_rename_fresh t old fresh v r :
   term_eval t (update_real v old r).
 Proof.
   induction t as [y | y | c | t1 IH1 t2 IH2 | t1 IH1 t2 IH2];
-    cbn [term_real_program_vars]; try rewrite in_app_iff; intro H;
+    cbn [term_real_program_vars]; try rewrite ?in_app_iff; intro H;
     cbn [rename_real_term term_eval].
   - destruct (real_program_var_eq_dec y old) as [E | Hyo]; cbn [term_eval].
     + subst y; now rewrite !update_real_here.
@@ -186,7 +186,7 @@ Lemma satisfies_rename_fresh gamma old fresh v r :
    satisfies (update_real v old r) gamma).
 Proof.
   induction gamma as [b | b | t1 t2 | | g1 IH1 g2 IH2];
-    cbn [cformula_real_program_vars]; try rewrite in_app_iff; intro H;
+    cbn [cformula_real_program_vars]; try rewrite ?in_app_iff; intro H;
     cbn [rename_real_cformula satisfies]; try reflexivity.
   - rewrite !term_eval_rename_fresh by tauto; reflexivity.
   - specialize (IH1 ltac:(tauto)); specialize (IH2 ltac:(tauto)); tauto.
@@ -197,8 +197,8 @@ Lemma distribution_measure_rename_fresh d old fresh v r :
   distribution_measure (rename_real_distribution old fresh d) (update_real v fresh r) =
   distribution_measure d (update_real v old r).
 Proof.
-  destruct d as [a c | a c | a c];
-    cbn [distribution_real_program_vars]; rewrite in_app_iff; intro H;
+  destruct d as [a c | a c | a c | a];
+    cbn [distribution_real_program_vars]; rewrite ?in_app_iff; intro H;
     unfold distribution_measure, DistributionSemantics.real_law;
     cbn [rename_real_distribution];
     rewrite !term_eval_rename_fresh by tauto; reflexivity.

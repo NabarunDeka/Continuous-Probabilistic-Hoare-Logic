@@ -470,7 +470,8 @@ Definition pstate_admissible (ps : Pstate) : Prop :=
 Inductive Distribution : Type :=
   | Uniform (lower upper : Term)
   | Laplace (location scale : Term)
-  | Gaussian (mean standard_deviation : Term).
+  | Gaussian (mean standard_deviation : Term)
+  | Exponential (rate : Term).
 
 Definition distribution_valid (d : Distribution) (v : state) : Prop :=
   match d with
@@ -480,6 +481,7 @@ Definition distribution_valid (d : Distribution) (v : state) : Prop :=
       (0 < term_eval scale v)%R
   | Gaussian _ standard_deviation =>
       (0 < term_eval standard_deviation v)%R
+  | Exponential rate => (0 < term_eval rate v)%R
   end.
 
 (** General measurable events need a decision on a proposition. Use the
@@ -566,6 +568,9 @@ Definition distribution_density (d : Distribution) (v : state) (z : R) : R :=
       (1 / (deviation_value * sqrt (2 * PI))) *
         exp (- ((z - mean_value) * (z - mean_value)) /
           (2 * deviation_value * deviation_value))
+  | Exponential rate =>
+      real_indicator (0 <= z)%R * term_eval rate v *
+        exp (- term_eval rate v * z)
   end.
 
 (** Parameter expressions are evaluated in the incoming joint valuation.
@@ -585,15 +590,15 @@ Local Open Scope ereal_scope.
 Definition validb (d : CPHL.Distribution) (v : Valuation) : bool :=
   match d with
   | CPHL.Uniform a b => (term_eval a v < term_eval b v)%R
-  | CPHL.Laplace _ s | CPHL.Gaussian _ s => (0 < term_eval s v)%R
+  | CPHL.Laplace _ s | CPHL.Gaussian _ s | CPHL.Exponential s => (0 < term_eval s v)%R
   end.
 
 Lemma validbP d v : reflect (distribution_valid d v) (validb d v).
-Proof. case: d => a b; exact: RltP. Qed.
+Proof. case: d => [a b|a b|a b|a]; exact: RltP. Qed.
 
 Lemma validb_measurable d : measurable_fun [set: Valuation] (validb d).
 Proof.
-case: d => a b; apply: measurable_fun_ltr => //; exact: measurable_term.
+case: d => [a b|a b|a b|a]; apply: measurable_fun_ltr => //; exact: measurable_term.
 Qed.
 
 Definition real_law (d : CPHL.Distribution) (v : Valuation) :
@@ -602,6 +607,7 @@ Definition real_law (d : CPHL.Distribution) (v : Valuation) :
   | CPHL.Uniform a b => DistributionLaws.uniform (term_eval a v, term_eval b v)
   | CPHL.Laplace m s => DistributionLaws.laplace (term_eval m v, term_eval s v)
   | CPHL.Gaussian m s => DistributionLaws.gaussian (term_eval m v, term_eval s v)
+  | CPHL.Exponential r => DistributionLaws.exponential (term_eval r v)
   end.
 
 Lemma real_law_measurable d A : measurable A ->
@@ -612,10 +618,12 @@ have mp a b : @measurable_fun _ _ [the measurableType _ of Valuation]
     [the measurableType _ of (real * real)%type] setT
     (fun v => (term_eval a v, term_eval b v)).
   apply: measurable_fun_pair; exact: measurable_term.
-case: d => a b.
+case: d => [a b|a b|a b|a].
 - exact: measurableT_comp (measurable_kernel DistributionLaws.uniform A mA) (mp a b).
 - exact: measurableT_comp (measurable_kernel DistributionLaws.laplace A mA) (mp a b).
 - exact: measurableT_comp (measurable_kernel DistributionLaws.gaussian A mA) (mp a b).
+- rewrite /real_law; exact: measurableT_comp
+    (@DistributionLaws.exponential_measurable A mA) (measurable_term a).
 Qed.
 
 HB.instance Definition _ d := isKernel.Build _ _ _ _ _
@@ -623,7 +631,7 @@ HB.instance Definition _ d := isKernel.Build _ _ _ _ _
 
 Lemma real_law_mass d v : real_law d v setT = if validb d v then 1 else 0.
 Proof.
-case: d => a b; rewrite /real_law /validb;
+case: d => [a b|a b|a b|a]; rewrite /real_law /validb;
   exact: DistributionLaws.parameter_measure_mass.
 Qed.
 
@@ -1486,6 +1494,7 @@ Definition distribution_real_program_vars (d : Distribution) :
   | Gaussian mean standard_deviation =>
       term_real_program_vars mean ++
       term_real_program_vars standard_deviation
+  | Exponential rate => term_real_program_vars rate
   end.
 
 Fixpoint pconstruct_real_program_vars (q : PConstruct) :
@@ -1606,6 +1615,7 @@ Definition rename_real_distribution
   | Gaussian mean standard_deviation =>
       Gaussian (rename_real_term old fresh mean)
         (rename_real_term old fresh standard_deviation)
+  | Exponential rate => Exponential (rename_real_term old fresh rate)
   end.
 
 (** Rename occurrences bound by an enclosing [QIntegral].  A nested integral
@@ -1664,6 +1674,7 @@ Definition subst_real_distribution
   | Gaussian mean standard_deviation =>
       Gaussian (subst_real_term x replacement mean)
         (subst_real_term x replacement standard_deviation)
+  | Exponential rate => Exponential (subst_real_term x replacement rate)
   end.
 
 (** The fuel is only used to make recursive calls after alpha-renaming
@@ -2070,6 +2081,7 @@ Definition distribution_valid_formula (d : Distribution) : CFormula :=
   | Laplace _ scale => c_lt (TConst 0%R) scale
   | Gaussian _ standard_deviation =>
       c_lt (TConst 0%R) standard_deviation
+  | Exponential rate => c_lt (TConst 0%R) rate
   end.
 
 Theorem distribution_valid_formula_spec :
@@ -2163,6 +2175,10 @@ Notation "'gaussian' ( mean , deviation )" := (Gaussian mean deviation)
   (in custom cphl_expr at level 0,
    mean custom cphl_expr at level 88,
    deviation custom cphl_expr at level 88) : cphl_scope.
+
+Notation "'exponential' ( rate )" := (Exponential rate)
+  (in custom cphl_expr at level 0,
+   rate custom cphl_expr at level 88) : cphl_scope.
 
 (** Commands.  Boolean assignment retains the old formalization's distinct
     [b=] token so real and Boolean assignment remain unambiguous. *)

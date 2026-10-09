@@ -160,6 +160,23 @@ rewrite /uniform_pdf; apply: measurable_fun_ifT => //.
   exact: measurable_funB.
 Qed.
 
+Lemma measurable_exponential_joint :
+  measurable_fun setT (fun t => exponential_pdf (b t) (z t)).
+Proof.
+have E t : exponential_pdf (b t) (z t) =
+    (if (0 <= z t)%R then b t * expR (- b t * z t) else 0)%R.
+  case: ifP => h; first exact: exponential_pdfE.
+  apply: lt0_exponential_pdf; by rewrite ltNge h.
+have -> : (fun t => exponential_pdf (b t) (z t)) =
+    (fun t => if (0 <= z t)%R then (b t * expR (- b t * z t))%R else 0%R)
+    by apply/funext => t; exact: E.
+apply: measurable_fun_ifT => //.
+- exact: measurable_fun_ler.
+- apply: measurable_funM => //.
+  apply: measurableT_comp; first exact: measurable_expR.
+  apply: measurable_funM => //; exact: measurable_funN.
+Qed.
+
 Lemma measurable_laplace_joint :
   measurable_fun setT (fun t => laplace_pdf (a t) (b t) (z t)).
 Proof.
@@ -378,6 +395,66 @@ rewrite (eq_integral (fun x => (normal_pdf a b x)%:E)).
 - by move=> x _; rewrite normal_pdfE//.
 - exact: integral_normal_pdf.
 Qed.
+
+Lemma exponential_density_measurable : measurable_fun setT
+  (fun p : (real * real) * real => exponential_pdf p.1.2 p.2).
+Proof.
+apply: measurable_exponential_joint => //.
+exact: measurableT_comp measurable_snd measurable_fst.
+Qed.
+
+Lemma exponential_density_ge0 a b x : scale_valid a b ->
+  (0 <= exponential_pdf b x)%R.
+Proof. move=> h; apply: exponential_pdf_ge0; exact: ltW h. Qed.
+
+Lemma exponential_density_mass a b : scale_valid a b ->
+  \int[mu]_x (exponential_pdf b x)%:E = 1.
+Proof. exact: integral_exponential_pdf. Qed.
+
+Definition exponential_pair : real.-spker (real * real) ~> real :=
+  @parameter_measure scale_valid (fun _ b x => exponential_pdf b x)
+    scale_valid_measurable exponential_density_measurable
+    exponential_density_ge0 exponential_density_mass.
+
+Definition exponential (rate : real) : {measure set real -> \bar real} :=
+  exponential_pair (0%R, rate).
+
+Lemma exponential_measurable A : measurable A ->
+  measurable_fun setT (exponential ^~ A).
+Proof.
+move=> mA.
+have mp : @measurable_fun _ _ [the measurableType _ of (real : Type)]
+    [the measurableType _ of (real * real)%type] setT
+    (fun rate : real => (0%R, rate)).
+  exact: measurable_fun_pair.
+rewrite /exponential.
+exact: measurableT_comp (measurable_kernel exponential_pair A mA) mp.
+Qed.
+
+HB.instance Definition _ := isKernel.Build _ _ _ _ _
+  exponential exponential_measurable.
+
+Lemma exponential_mass rate : exponential rate setT =
+  if (0 < rate)%R then 1 else 0.
+Proof. exact: parameter_measure_mass. Qed.
+
+Lemma exponential_subprob :
+  ereal_sup [set exponential rate setT | rate in [set: real]] <= 1.
+Proof.
+apply: ge_ereal_sup => _ [rate _ <-]; rewrite exponential_mass.
+by case: (0 < rate)%R; [exact: lexx | exact: lee01].
+Qed.
+
+HB.instance Definition _ := Kernel_isSubProbability.Build _ _ _ _ _
+  exponential exponential_subprob.
+
+Lemma exponential_valid_event rate A : (0 < rate)%R ->
+  exponential rate A = \int[mu]_(x in A) (exponential_pdf rate x)%:E.
+Proof. exact: parameter_measure_valid. Qed.
+
+Lemma exponential_invalid_event rate A : ~~ (0 < rate)%R ->
+  exponential rate A = 0.
+Proof. exact: parameter_measure_invalid. Qed.
 
 (** These are the complete subprobability kernels on the parameter pair. *)
 Definition uniform : real.-spker (real * real) ~> real :=

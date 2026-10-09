@@ -1,11 +1,11 @@
 (** Density correspondence and boundary checks for the production sampling
     laws. No historical example-calculation assumption is imported here. *)
-From Stdlib Require Import Reals.
+From Stdlib Require Import Reals Lra.
 From mathcomp Require Import boot order ssralg ssrnum interval interval_inference.
 From mathcomp Require Import boolp classical_sets functions reals topology.
 From mathcomp Require Import ereal normedtype sequences exp numfun measure measurable_realfun.
 From mathcomp Require Import lebesgue_measure lebesgue_integral lebesgue_stieltjes_measure kernel.
-From mathcomp Require Import uniform_distribution normal_distribution bernoulli_distribution.
+From mathcomp Require Import uniform_distribution normal_distribution exponential_distribution bernoulli_distribution.
 From mathcomp Require Import Rstruct Rstruct_topology.
 Require Import AnalysisPrelude MeasureIntegration DistributionKernels CPHL.
 
@@ -54,6 +54,20 @@ rewrite -(mulr_natr (term_eval b v ^+ 2)%R 2) expr2.
 by rewrite -mulrA mulrC.
 Qed.
 
+Lemma exponential_density_bridge rate v z :
+  distribution_density (Exponential rate) v z =
+  exponential_pdf (term_eval rate v) z.
+Proof.
+rewrite /distribution_density.
+case: (Rle_dec 0 z) => hz.
+- have hz' : (0 <= z)%R by exact/RleP.
+  rewrite (real_indicator_true _ hz) (exponential_pdfE _ hz').
+  by rewrite RexpE !RealsE mul1r.
+- have hz' : (z < 0)%R by apply/RltP; exact (Rnot_le_lt _ _ hz).
+  rewrite (real_indicator_false _ hz) (lt0_exponential_pdf _ hz').
+  by rewrite !RealsE !mul0r.
+Qed.
+
 (** Valid laws have unit mass; invalid parameters give the zero measure
     on every event, including degenerate Uniform intervals and zero scale. *)
 Lemma distribution_mass_valid d v : distribution_valid d v ->
@@ -67,7 +81,7 @@ Lemma distribution_invalid d v A : ~ distribution_valid d v ->
   distribution_measure d v A = 0.
 Proof.
 move=> h; have hv : ~~ validb d v by apply/negP => /validbP.
-clear h; case: d hv => a b hv.
+clear h; case: d hv => [a b|a b|a b|a] hv.
 - exact: (@parameter_measure_invalid _ _ uniform_valid_measurable
     uniform_density_measurable (@uniform_pdf_ge0 real)
     uniform_density_mass (term_eval a v, term_eval b v) A hv).
@@ -77,28 +91,33 @@ clear h; case: d hv => a b hv.
 - exact: (@parameter_measure_invalid _ _ scale_valid_measurable
     gaussian_density_measurable (fun a b x _ => normal_pdf0_ge0 a b x)
     gaussian_density_mass (term_eval a v, term_eval b v) A hv).
+- exact: exponential_invalid_event hv.
 Qed.
 
 Lemma distribution_density_event d v A : distribution_valid d v ->
   distribution_measure d v A =
   \int[lebesgue_measure]_(z in A) (distribution_density d v z)%:E.
 Proof.
-case: d => a b /[dup] h /RltP hb; rewrite /distribution_measure /real_law.
+case: d => [a b|a b|a b|a] /[dup] h /RltP hb; rewrite /distribution_measure /real_law.
 - rewrite uniform_valid_event//; apply: eq_integral => z _.
   by rewrite uniform_density_bridge.
 - rewrite laplace_valid_event//; apply: eq_integral => z _.
   by rewrite laplace_density_bridge.
 - rewrite gaussian_valid_event//; apply: eq_integral => z _.
   by rewrite gaussian_density_bridge.
+- rewrite exponential_valid_event//; apply: eq_integral => z _.
+  by rewrite exponential_density_bridge.
 Qed.
 
 Lemma distribution_density_nonnegative d v z : distribution_valid d v ->
   (0 <= distribution_density d v z)%R.
 Proof.
-case: d => a b h.
+case: d => [a b|a b|a b|a] h.
 - rewrite uniform_density_bridge; apply: uniform_pdf_ge0; exact/RltP.
 - rewrite laplace_density_bridge; apply: laplace_pdf_ge0; exact/RltP.
 - rewrite gaussian_density_bridge//; exact: normal_pdf0_ge0.
+- rewrite exponential_density_bridge; apply: exponential_pdf_ge0.
+  apply: ltW; exact/RltP.
 Qed.
 
 Lemma distribution_density_normalized d v : distribution_valid d v ->
@@ -114,7 +133,7 @@ Lemma distribution_density_measurable d v : distribution_valid d v ->
   @measurable_fun _ _ RealIntegration.Space RealIntegration.Space
     setT (distribution_density d v).
 Proof.
-case: d => a b h.
+case: d => [a b|a b|a b|a] h.
 - apply: (eq_measurable_fun (uniform_pdf (term_eval a v) (term_eval b v))).
   + by move=> z _; rewrite uniform_density_bridge.
   + exact: measurable_uniform_pdf.
@@ -124,6 +143,9 @@ case: d => a b h.
 - apply: (eq_measurable_fun (normal_pdf0 (term_eval a v) (term_eval b v))).
   + by move=> z _; rewrite gaussian_density_bridge.
   + exact: measurable_normal_pdf0.
+- apply: (eq_measurable_fun (exponential_pdf (term_eval a v))).
+  + by move=> z _; rewrite exponential_density_bridge.
+  + exact: measurable_exponential_pdf.
 Qed.
 
 Lemma distribution_density_integrable d v : distribution_valid d v ->

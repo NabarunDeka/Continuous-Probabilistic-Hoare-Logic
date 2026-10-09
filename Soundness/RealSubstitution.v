@@ -38,7 +38,7 @@ Lemma subst_real_distribution_correct x t d v :
   distribution_measure (subst_real_distribution x t d) v =
   distribution_measure d (update_real v x (term_eval t v)).
 Proof.
-  destruct d as [a b | a b | a b];
+  destruct d as [a b | a b | a b | a];
     unfold distribution_measure, DistributionSemantics.real_law;
     cbn [subst_real_distribution]; rewrite !subst_real_term_correct; reflexivity.
 Qed.
