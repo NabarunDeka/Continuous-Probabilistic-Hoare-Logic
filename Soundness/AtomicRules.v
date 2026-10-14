@@ -1,4 +1,5 @@
-(** Soundness of the four atomic Hoare constructors. All assertion premises
+From Stdlib Require Import Reals.
+(** Soundness of the atomic assignment, toss, and sampling rules. All assertion premises
     are interpreted through pformula_valid on admissible joint states. *)
 Require Import CPHL Soundness.AssertionLogic Soundness.RealSubstitutionAssertions
   Soundness.BoolSubstitutionAssertions Soundness.AtomicCommandFacts.
@@ -30,6 +31,17 @@ Lemma hoare_valid_bool_toss eta b r : coin_probability_valid r ->
 Proof.
   intros Hr ps Hps Hpre.
   apply (proj1 (toss_pformula_correct b r eta ps Hps Hr)); exact Hpre.
+Qed.
+
+(** An invalid toss has zero total output mass for every admissible input. *)
+Lemma hoare_valid_bool_toss_invalid b r :
+  ~ coin_probability_valid r ->
+  hoare_valid p_true (CBoolToss b r)
+    (p_eq (PExpect (QIndicator c_true)) (PConst 0%R)).
+Proof.
+  intros Hr ps Hps Hpre.
+  apply (proj2 (psatisfies_eq _ _ _)); cbn [pterm_eval].
+  apply run_toss_invalid_expectation; assumption.
 Qed.
 
 (** The semantic sampling identity includes invalid parameters via the

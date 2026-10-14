@@ -20,6 +20,7 @@ Proof.
   - apply hoare_valid_real_assign.
   - apply hoare_valid_bool_assign.
   - apply hoare_valid_bool_toss; assumption.
+  - apply hoare_valid_bool_toss_invalid; assumption.
   - eapply hoare_valid_real_sample; eassumption.
   - eapply hoare_valid_real_sample_invalid; eassumption.
   - eapply hoare_valid_if_le; eassumption.

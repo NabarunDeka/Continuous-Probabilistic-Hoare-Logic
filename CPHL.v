@@ -2292,6 +2292,12 @@ Inductive hoare_derivable : PFormula -> Cmd -> PFormula -> Prop :=
       forall (eta : PFormula) (b : BoolProgramVar) (r : R),
         coin_probability_valid r ->
         hoare_derivable (toss_pformula b r eta) (CBoolToss b r) eta
+  (** Invalid constant toss probabilities annihilate the input measure. *)
+  | HBoolTossInvalid :
+      forall (b : BoolProgramVar) (r : R),
+        ~ coin_probability_valid r ->
+        hoare_derivable p_true (CBoolToss b r)
+          (p_eq (PExpect (QIndicator c_true)) (PConst 0%R))
   | HRealSample :
       forall (pre eta : PFormula) (x : RealProgramVar) (d : Distribution),
         pformula_valid (PFImpl pre (sample_pformula x d eta)) ->

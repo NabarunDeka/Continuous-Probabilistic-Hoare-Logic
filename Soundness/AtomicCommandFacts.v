@@ -91,6 +91,25 @@ Proof.
       (ConcreteMeasure.expectation_scale (1-r)%R hf).
 Qed.
 
+(** Invalid constant probabilities give zero output on every measurable
+    event, hence zero expectation even for nested integral constructs. *)
+Lemma run_toss_invalid_expectation b r ps q :
+  pstate_admissible ps -> ~ coin_probability_valid r ->
+  expectation (pstate_measure (run (CBoolToss b r) ps)) (q_eval q) = 0%R.
+Proof.
+  move=> Hps Hr.
+  have hn : ~~ DistributionLaws.toss_valid r.
+  { apply/negP => hv; apply Hr; exact: (proj2 (coin_probability_valid_spec r)) hv. }
+  transitivity (expectation ConcreteMeasure.zero (q_eval q)).
+  - apply expectation_measure_equiv => A mA.
+    change (transform [the real.-spker _ ~> _ of CommandSemantics.toss b r]
+      (pstate_measure ps) A = ConcreteMeasure.zero A).
+    rewrite transform_event.
+    under eq_integral do rewrite (@toss_invalid b r _ A mA hn).
+    by rewrite integral0 /ConcreteMeasure.zero.
+  - exact: q_expectation_zero.
+Qed.
+
 Lemma toss_pterm_correct b r p ps :
   pstate_admissible ps -> coin_probability_valid r ->
   pterm_eval (toss_pterm b r p) ps = pterm_eval p (run (CBoolToss b r) ps).
