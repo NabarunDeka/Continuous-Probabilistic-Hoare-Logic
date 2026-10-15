@@ -1,35 +1,22 @@
 (**
-  MonteCarloEst.v -- fixed-horizon Monte Carlo estimator for the area of a
-  quarter disk.
+  MonteCarloEst.v
 
-      i := 0;  H := 0;
-      while 0 <= i < M do
-        X <- sample(Uniform(0,1));
-        Y <- sample(Uniform(0,1));
+  Program ([monte_carlo_estimator M]):
+
+      i := 0;
+      H := 0;
+      while (0 <= i /\ i < M) do
+        X <- sample(uniform(0, 1));
+        Y <- sample(uniform(0, 1));
         if X*X + Y*Y <= 1 then H := H + 1 else skip end;
         i := i + 1
       end
 
-  THE TRIPLE ([monte_carlo_estimator_probability], for [k <= M]):
+  Triple ([monte_carlo_estimator_probability], for k <= M):
 
-      { Pr[tt] = 1 }
+      { E[1_tt] = 1 }
           monte_carlo_estimator M
-      { Pr[H = k] = C(M,k) * (pi/4)^k * (1 - pi/4)^(M-k) }
-
-  M uniform darts are thrown at the unit square and [H] counts those landing
-  in the quarter disk.  Each throw is an independent Bernoulli trial of
-  success probability exactly [pi/4] -- the area -- so the hit count [H] is
-  Binomial(M, pi/4), which is what the postcondition states.
-
-  Unlike every rejection sampler in this directory the loop is FIXED-HORIZON:
-  the guard counts iterations rather than testing an acceptance flag, so the
-  trip count is [M] and termination is structural.
-
-  The single geometric input is [real_integral_unit_square_quarter_disk] in
-  CPHL.v, the trusted law giving the quarter-disk area as [pi/4].
-
-  Concrete instances are checked at the end of the file:
-  [monte_carlo_probability_0_0], [_1_0], [_1_1], [_2_1].
+      { E[1_(H = k)] = C(M, k) * (PI/4)^k * (1 - PI/4)^(M - k) }
 *)
 
 From Stdlib Require Import Reals.
@@ -43,16 +30,99 @@ From Stdlib Require Import Lra.
 From Stdlib Require Import Psatz.
 From Stdlib Require Import Field.
 From Stdlib Require Import Ring.
-From Stdlib Require Import ClassicalDescription.
 From Stdlib Require Import Logic.FunctionalExtensionality.
 
 Require Import CPHL.
+Require Import CPHLFacts.CalculationFacts.
+Require Import QuarterDiskIntegral.
+
+(** Keep propositional automation intuitionistic; when classical reasoning
+    is needed, use MathComp's double-negation law rather than the default
+    Stdlib fallback of [tauto]. *)
+Local Ltac mathcomp_tauto :=
+  first [solve [intuition fail] |
+    apply (proj1 (boolp.not_notP _)); solve [intuition fail] ].
+(** Concrete density rewrites require valid sampling parameters. Semantic
+    assertion premises additionally introduce admissibility of the input. *)
 
 Open Scope R_scope.
 Open Scope string_scope.
 Local Open Scope cphl_scope.
 Local Open Scope cphl_hoare_scope.
 Import ListNotations.
+
+(** * Local analytic facts *)
+
+Lemma real_integral_uniform_density :
+  forall a b : R,
+    (a < b)%R ->
+    real_integral
+      (fun x => real_indicator (a <= x /\ x <= b)%R / (b - a)) = 1%R.
+Proof.
+  intros a b Hab.
+  exact (@real_integral_distribution_density
+    (Uniform (TConst a) (TConst b)) demo_valuation Hab).
+Qed.
+
+(** For [x] in [[0, 1]], the inner integral is the length of
+    [[0, sqrt (1 - x^2)]]. *)
+Lemma quarter_disk_inner :
+  forall x : R,
+    (0 <= x <= 1)%R ->
+    real_integral
+      (fun y =>
+        real_indicator (0 <= y /\ y <= 1)%R *
+        real_indicator (x * x + y * y <= 1)%R) =
+    sqrt (1 - x * x).
+Proof.
+  intros x Hx.
+  assert (Hs : (0 <= 1 - x * x)%R) by nra.
+  pose proof (sqrt_pos (1 - x * x)) as Hpos.
+  pose proof (sqrt_sqrt (1 - x * x) Hs) as Hsq.
+  transitivity
+    (real_integral (fun y => real_indicator (0 <= y /\ y <= sqrt (1 - x * x))%R)).
+  - apply real_integral_extensional; intro y.
+    destruct (Rle_dec 0 y) as [Hy0 | Hy0];
+      [destruct (Rle_dec y (sqrt (1 - x * x))) as [Hys | Hys] |].
+    + rewrite (real_indicator_true (0 <= y /\ y <= 1)%R) by (split; nra).
+      rewrite (real_indicator_true (x * x + y * y <= 1)%R) by nra.
+      rewrite (real_indicator_true (0 <= y /\ y <= sqrt (1 - x * x))%R) by lra.
+      ring.
+    + rewrite (real_indicator_false (x * x + y * y <= 1)%R) by nra.
+      rewrite (real_indicator_false (0 <= y /\ y <= sqrt (1 - x * x))%R) by lra.
+      ring.
+    + rewrite (real_indicator_false (0 <= y /\ y <= 1)%R) by lra.
+      rewrite (real_indicator_false (0 <= y /\ y <= sqrt (1 - x * x))%R) by lra.
+      ring.
+  - rewrite real_integral_closed_between_one by exact Hpos.
+    ring.
+Qed.
+
+(** The unit-square quarter disk, in the nested order of two uniform samples. *)
+Lemma real_integral_unit_square_quarter_disk :
+  real_integral
+    (fun x =>
+      real_indicator (0 <= x /\ x <= 1)%R *
+      real_integral
+        (fun y =>
+          real_indicator (0 <= y /\ y <= 1)%R *
+          real_indicator (x * x + y * y <= 1)%R)) = (PI / 4)%R.
+Proof.
+  rewrite <- real_integral_sqrt_quarter.
+  apply real_integral_extensional; intro x.
+  destruct (Rle_dec 0 x) as [Hx0 | Hx0];
+    [destruct (Rle_dec x 1) as [Hx1 | Hx1] |].
+  - rewrite quarter_disk_inner by lra; reflexivity.
+  - rewrite !(real_indicator_false (0 <= x /\ x <= 1)%R) by lra; ring.
+  - rewrite !(real_indicator_false (0 <= x /\ x <= 1)%R) by lra; ring.
+Qed.
+
+(** Solve only the measurable Boolean event algebra appearing below. *)
+Ltac calculation_event :=
+  first [apply ValuationSpace.measurable_formula_event
+  | apply measurable_assertion_true
+  | apply measurable_assertion_not; calculation_event
+  | apply measurable_assertion_and; calculation_event].
 
 (** Program variables and readable surface syntax. *)
 Definition monte_carlo_i : RealProgramVar := real_program_var "mc_i".
@@ -170,6 +240,14 @@ Lemma monte_carlo_two_uniforms_eval :
 Proof.
   intro v.
   unfold monte_carlo_two_uniforms_construct.
+  repeat rewrite q_eval_integral_density by
+    (intro w; cbn [distribution_valid term_eval];
+     first [assumption | lra | apply Rdiv_lt_0_compat; lra]).
+  (** Rewrite the syntax indicator beneath both sampling integrals before
+      using the existing normalization calculation. *)
+  cbn [q_eval].
+  rewrite (FunctionalExtensionality.functional_extensionality
+    _ _ (formula_indicatorE c_true)).
   change
     (real_integral
       (fun x =>
@@ -190,7 +268,7 @@ Proof.
   - apply real_integral_extensional.
     intro x.
     cbn [c_true satisfies].
-    rewrite real_indicator_true by tauto.
+    rewrite real_indicator_true by mathcomp_tauto.
     replace
       (real_integral
         (fun y =>
@@ -218,7 +296,14 @@ Proof.
   intro v.
   unfold monte_carlo_hit_construct, monte_carlo_hit_probability,
     monte_carlo_hit.
+  repeat rewrite q_eval_integral_density by
+    (intro w; cbn [distribution_valid term_eval];
+     first [assumption | lra | apply Rdiv_lt_0_compat; lra]).
   cbn [q_eval distribution_density term_eval update_real update_real_values].
+  (** Recover the event-mask interface after reducing a construct leaf. *)
+  repeat rewrite (FunctionalExtensionality.functional_extensionality
+    _ _ (formula_indicatorE _)).
+  cbn [distribution_density term_eval update_real update_real_values].
   repeat match goal with
   | |- context [real_program_var_eq_dec ?x ?y] =>
       destruct (real_program_var_eq_dec x y); [congruence |]
@@ -239,13 +324,13 @@ Proof.
       intro y.
       rewrite Rminus_0_r, Rdiv_1_r.
       apply f_equal2 with (f := Rmult); [reflexivity |].
-      apply real_indicator_extensional.
+      rewrite ?q_eval_indicatorE, ?formula_indicatorE; apply real_indicator_extensional.
       cbn [satisfies term_eval update_real update_real_values].
       repeat match goal with
       | |- context [real_program_var_eq_dec ?a ?b] =>
           destruct (real_program_var_eq_dec a b); [congruence |]
       end.
-      tauto.
+      mathcomp_tauto.
   - apply real_integral_unit_square_quarter_disk.
 Qed.
 
@@ -254,9 +339,9 @@ Lemma monte_carlo_indicator_complement :
     (real_indicator P + real_indicator (~ P) = 1)%R.
 Proof.
   intro P.
-  destruct (excluded_middle_informative P) as [HP | HnP].
+  destruct (boolp.pselect P) as [HP | HnP].
   - rewrite (real_indicator_true P HP).
-    rewrite (real_indicator_false (~ P)) by tauto.
+    rewrite (real_indicator_false (~ P)) by mathcomp_tauto.
     ring.
   - rewrite (real_indicator_false P HnP).
     rewrite (real_indicator_true (~ P) HnP).
@@ -276,25 +361,15 @@ Proof.
   {
     unfold monte_carlo_hit_construct, monte_carlo_miss_construct,
       monte_carlo_two_uniforms_construct, monte_carlo_hit.
-    cbn [q_eval].
-    rewrite <- real_integral_add.
-    apply real_integral_extensional.
-    intro x.
-    rewrite <- Rmult_plus_distr_l.
-    apply f_equal2 with (f := Rmult); [reflexivity |].
-    rewrite <- real_integral_add.
-    apply real_integral_extensional.
-    intro y.
+    apply q_integral_partition; intro w.
+    apply q_integral_partition; intro u.
+    cbn [q_eval c_not c_true satisfies].
+    (** Recover the event-mask interface after reducing a construct leaf. *)
+    repeat rewrite (FunctionalExtensionality.functional_extensionality
+      _ _ (formula_indicatorE _)).
     cbn [c_not c_true satisfies].
-    replace (real_indicator (False -> False)) with 1%R.
-    2:{ symmetry; apply real_indicator_true; tauto. }
-    match goal with
-    | |- ?d * real_indicator ?P + ?d * real_indicator (?P -> False) =
-          ?d * 1 =>
-        pose proof (monte_carlo_indicator_complement P) as Hind;
-        replace (P -> False) with (~ P) by tauto;
-        nra
-    end.
+    rewrite monte_carlo_indicator_complement.
+    symmetry; rewrite ?q_eval_indicatorE, ?formula_indicatorE; apply real_indicator_true; mathcomp_tauto.
   }
   rewrite monte_carlo_hit_construct_eval in Hpartition.
   rewrite monte_carlo_two_uniforms_eval in Hpartition.
@@ -306,13 +381,8 @@ Lemma monte_carlo_hit_probability_bounds :
 Proof.
   unfold monte_carlo_hit_probability.
   pose proof PI_RGT_0 as Hpositive.
-  pose proof (PI_2_3_7_ineq 0%nat) as [_ Hupper].
-  replace (2 * 0)%nat with 0%nat in Hupper by lia.
-  cbn [sum_f_R0] in Hupper.
-  unfold tg_alt, PI_2_3_7_tg, Ratan_seq in Hupper.
-  cbn in Hupper.
-  assert (H3 : (3 * / 3 = 1)%R) by (apply Rinv_r; lra).
-  assert (H7 : (7 * / 7 = 1)%R) by (apply Rinv_r; lra).
+  (** The MathComp bound uses the same PI through [StandardReal.pi]. *)
+  pose proof real_pi_lt_four as Hupper.
   lra.
 Qed.
 
@@ -465,7 +535,7 @@ Proof.
   intros y r.
   cbn [monte_carlo_rigid_constant p_eq p_and p_not
     pformula_analytical pterm_analytical].
-  tauto.
+  mathcomp_tauto.
 Qed.
 
 Lemma monte_carlo_add_rigid_constant :
@@ -483,10 +553,10 @@ Proof.
     eapply HConseq with
       (eta1 := eta) (eta2 := monte_carlo_event_probability r gamma).
     - unfold pformula_valid.
-      intro ps; cbn [p_and p_not psatisfies]; tauto.
+      intros ps Hps_admissible; cbn [p_and p_not psatisfies]; mathcomp_tauto.
     - exact Hbranch.
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies]; tauto.
+      intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
   }
   assert (Hrigid :
     {{ $(eta) /\ $(monte_carlo_rigid_constant y r) }} $(s)
@@ -496,23 +566,22 @@ Proof.
       (eta1 := monte_carlo_rigid_constant y r)
       (eta2 := monte_carlo_rigid_constant y r).
     - unfold pformula_valid.
-      intro ps; cbn [p_and p_not psatisfies]; tauto.
+      intros ps Hps_admissible; cbn [p_and p_not psatisfies]; mathcomp_tauto.
     - apply HFree.
       apply monte_carlo_rigid_constant_analytical.
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies]; tauto.
+      intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
   }
   eapply HConseq with
     (eta1 := [[ $(eta) /\ $(monte_carlo_rigid_constant y r) ]])
     (eta2 := [[ $(monte_carlo_event_probability r gamma) /\
       $(monte_carlo_rigid_constant y r) ]]).
   - unfold pformula_valid.
-    intro ps; cbn [psatisfies]; tauto.
+    intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
   - apply HAnd; assumption.
   - unfold pformula_valid, monte_carlo_event_probability,
       monte_carlo_rigid_constant.
-    intro ps.
-    intro Hadm.
+    intros ps Hps_admissible.
     cbn [p_and p_not p_eq psatisfies pterm_eval] in *.
     intuition lra.
 Qed.
@@ -563,14 +632,13 @@ Proof.
         monte_carlo_miss_mass_var = Pr[$(gamma)] ]]).
     - unfold pformula_valid, with_constants, base, eq1, eq2,
         if_precondition, monte_carlo_rigid_constant.
-      intro ps.
-      intro Hadm.
+      intros ps Hps_admissible.
       cbn [condition_pformula condition_pterm p_and p_not p_eq
         psatisfies pterm_eval] in *.
       intuition lra.
     - exact Hif.
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies]; tauto.
+      intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
   }
   assert (Hconstants :
     {{ $(with_constants) }}
@@ -581,14 +649,14 @@ Proof.
       (eta1 := [[ $(eq1) /\ $(eq2) ]])
       (eta2 := [[ $(eq1) /\ $(eq2) ]]).
     - unfold pformula_valid, with_constants.
-      intro ps; cbn [p_and p_not psatisfies]; tauto.
+      intros ps Hps_admissible; cbn [p_and p_not psatisfies]; mathcomp_tauto.
     - apply HFree.
       unfold eq1, eq2.
       cbn [monte_carlo_rigid_constant p_eq p_and p_not
         pformula_analytical pterm_analytical].
-      tauto.
+      mathcomp_tauto.
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies]; tauto.
+      intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
   }
   assert (Hwithout_rigids :
     {{ $(with_constants) }}
@@ -602,12 +670,11 @@ Proof.
           Pr[$(gamma)]) /\ $(eq1) /\ $(eq2)
       ]]).
     - unfold pformula_valid.
-      intro ps; cbn [psatisfies]; tauto.
+      intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
     - apply HAnd; assumption.
     - unfold pformula_valid, monte_carlo_event_probability, eq1, eq2,
         monte_carlo_rigid_constant.
-      intro ps.
-      intro Hadm.
+      intros ps Hps_admissible.
       cbn [p_and p_not p_eq psatisfies pterm_eval] in *.
       intuition lra.
   }
@@ -624,10 +691,10 @@ Proof.
         if $(guard) then $(s1) else $(s2) end
         {{ $(monte_carlo_event_probability (r1 + r2) gamma) }}).
       exact Hwithout_rigids.
-    - cbn [prob_logic_var_occurs_pterm]; tauto.
+    - cbn [prob_logic_var_occurs_pterm]; mathcomp_tauto.
     - cbn [monte_carlo_event_probability p_eq p_and p_not
         prob_logic_var_occurs_pformula prob_logic_var_occurs_pterm].
-      tauto.
+      mathcomp_tauto.
   }
   assert (Helim_hit :
     {{ $(subst_prob_pformula monte_carlo_hit_mass_var [[ $(r1) ]]
@@ -644,10 +711,10 @@ Proof.
         if $(guard) then $(s1) else $(s2) end
         {{ $(monte_carlo_event_probability (r1 + r2) gamma) }}).
       exact Helim_miss.
-    - cbn [prob_logic_var_occurs_pterm]; tauto.
+    - cbn [prob_logic_var_occurs_pterm]; mathcomp_tauto.
     - cbn [monte_carlo_event_probability p_eq p_and p_not
         prob_logic_var_occurs_pformula prob_logic_var_occurs_pterm].
-      tauto.
+      mathcomp_tauto.
   }
   unfold base in Helim_hit.
   exact Helim_hit.
@@ -658,8 +725,7 @@ Lemma monte_carlo_uniform_valid :
     [[ almost_sure[$(distribution_valid_formula
       <{ uniform ( 0, 1 ) }>)] ]].
 Proof.
-  intro ps.
-  intro Hadm.
+  intros ps Hps_admissible.
   unfold p_almost_sure, p_eq.
   cbn [p_and p_not psatisfies pterm_eval].
   assert (Heq :
@@ -690,10 +756,10 @@ Proof.
   intros eta x.
   apply HRealSample.
   - unfold pformula_valid.
-    intro ps; cbn [psatisfies]; tauto.
+    intros ps Hps_admissible; cbn [psatisfies]; mathcomp_tauto.
   - unfold pformula_valid.
-    intros ps _.
-    apply monte_carlo_uniform_valid.
+    intros ps Hps_admissible _.
+    apply monte_carlo_uniform_valid; exact Hps_admissible.
 Qed.
 
 Definition monte_carlo_after_i (gamma : CFormula) : CFormula :=
@@ -948,7 +1014,7 @@ Lemma monte_carlo_finite_c_or_spec :
       exists j : nat, (j < n)%nat /\ satisfies v (formulas j).
 Proof.
   induction n as [|n IH]; intros formulas v.
-  - cbn [finite_c_or satisfies]; split; [tauto |].
+  - cbn [finite_c_or satisfies]; split; [mathcomp_tauto |].
     intros Hex.
     destruct Hex as [j Hex].
     destruct Hex as [Hj Hsat].
@@ -959,7 +1025,7 @@ Proof.
     + intro Hor.
       assert (Hcases :
         (exists j : nat, (j < n)%nat /\ satisfies v (formulas j)) \/
-        satisfies v (formulas n)) by tauto.
+        satisfies v (formulas n)) by mathcomp_tauto.
       destruct Hcases as [Hex | Hsat].
       * destruct Hex as [j Hex].
         destruct Hex as [Hj Hsat].
@@ -987,10 +1053,10 @@ Proof.
   split.
   - intro H.
     split.
-    + apply NNPP; intro Hnot.
+    + apply (proj1 (boolp.not_notP _)); intro Hnot.
       apply H; intros Hgamma.
       exfalso; apply Hnot; exact Hgamma.
-    + apply NNPP; intro Hnot.
+    + apply (proj1 (boolp.not_notP _)); intro Hnot.
       apply H; intros _ Hdelta.
       apply Hnot; exact Hdelta.
   - intros [Hgamma Hdelta] Hbad.
@@ -1076,7 +1142,7 @@ Proof.
   assert (Hband_lower :
     (INR (M - r) <= real_program_values v monte_carlo_i)%R).
   {
-    apply NNPP; intro Hnot_lower.
+    apply (proj1 (boolp.not_notP _)); intro Hnot_lower.
     apply Hband; intros Hlower.
     exfalso; apply Hnot_lower; exact Hlower.
   }
@@ -1193,7 +1259,7 @@ Proof.
     replace (M - (M - n))%nat with n by lia.
     exact Hfloor.
   }
-  destruct (classic
+  destruct (boolp.EM
     (exists s : nat,
       (s <= r)%nat /\
       real_program_values v monte_carlo_H = (INR k - INR s)%R))
@@ -1378,7 +1444,7 @@ Proof.
       * rewrite Hfalse2.
         intros v Hboth.
         apply monte_carlo_c_and_spec in Hboth.
-        cbn [satisfies] in Hboth; tauto.
+        cbn [satisfies] in Hboth; mathcomp_tauto.
   - destruct Hrest1 as [Hother1 | Hfalse1].
     + destruct Hother1 as [Hslot1 Hregion1].
       destruct Hshape2 as [Hexact2 | Hrest2].
@@ -1436,11 +1502,11 @@ Proof.
         -- rewrite Hfalse2.
            intros v Hboth.
            apply monte_carlo_c_and_spec in Hboth.
-           cbn [satisfies] in Hboth; tauto.
+           cbn [satisfies] in Hboth; mathcomp_tauto.
     + rewrite Hfalse1.
       intros v Hboth.
       apply monte_carlo_c_and_spec in Hboth.
-      cbn [satisfies] in Hboth; tauto.
+      cbn [satisfies] in Hboth; mathcomp_tauto.
 Qed.
 
 (** Transition matrices and fixed-point candidates. *)
@@ -1515,7 +1581,7 @@ Proof.
   intros M index.
   unfold monte_carlo_row_active.
   rewrite Bool.orb_true_iff, Nat.leb_le, Nat.eqb_eq.
-  tauto.
+  mathcomp_tauto.
 Qed.
 
 Lemma monte_carlo_row_inactive_spec :
@@ -1528,7 +1594,7 @@ Proof.
   intros M index.
   unfold monte_carlo_row_active.
   rewrite Bool.orb_false_iff, Nat.leb_gt, Nat.eqb_neq.
-  tauto.
+  mathcomp_tauto.
 Qed.
 
 Lemma monte_carlo_destination_slots_bounded :
@@ -2316,7 +2382,7 @@ Proof.
   pose proof (monte_carlo_time_band_sample_invariant M r v x y) as Hband.
   pose proof (monte_carlo_exact_regions_sample_invariant M k r v x y)
     as Hexact.
-  tauto.
+  mathcomp_tauto.
 Qed.
 
 Lemma monte_carlo_region_sample_invariant :
@@ -2442,24 +2508,33 @@ Lemma monte_carlo_hit_pre_construct_eval :
           real_indicator (satisfies v (monte_carlo_after_hit gamma)))%R.
 Proof.
   intros gamma Hinvariant v.
-  destruct (excluded_middle_informative
-    (satisfies v (monte_carlo_after_hit gamma))) as [Htrue | Hfalse].
+  destruct (cformula_satisfies_dec (monte_carlo_after_hit gamma) v) as [Htrue | Hfalse].
   - rewrite (real_indicator_true _ Htrue), Rmult_1_r.
     transitivity (q_eval monte_carlo_hit_construct v).
     + unfold monte_carlo_hit_pre_construct, monte_carlo_hit_construct.
+      repeat rewrite q_eval_integral_density by
+        (intro w; cbn [distribution_valid term_eval]; lra).
       cbn [q_eval].
+      (** Recover the event-mask interface after reducing a construct leaf. *)
+      repeat rewrite (FunctionalExtensionality.functional_extensionality
+        _ _ (formula_indicatorE _)).
       apply real_integral_extensional; intro x.
       apply f_equal2 with (f := Rmult); [reflexivity |].
       apply real_integral_extensional; intro y.
       apply f_equal2 with (f := Rmult); [reflexivity |].
-      apply real_indicator_extensional.
+      rewrite ?q_eval_indicatorE, ?formula_indicatorE; apply real_indicator_extensional.
       rewrite monte_carlo_c_and_spec.
       pose proof (Hinvariant v x y) as HA.
-      tauto.
+      mathcomp_tauto.
     + apply monte_carlo_hit_construct_eval.
   - rewrite (real_indicator_false _ Hfalse), Rmult_0_r.
     unfold monte_carlo_hit_pre_construct.
-    cbn [q_eval].
+    repeat rewrite q_eval_integral_density by
+        (intro w; cbn [distribution_valid term_eval]; lra).
+      cbn [q_eval].
+      (** Recover the event-mask interface after reducing a construct leaf. *)
+      repeat rewrite (FunctionalExtensionality.functional_extensionality
+        _ _ (formula_indicatorE _)).
     transitivity (real_integral (fun _ : R => 0%R)).
     + apply real_integral_extensional; intro x.
       transitivity
@@ -2471,7 +2546,7 @@ Proof.
              (distribution_density <{ uniform ( 0, 1 ) }>
                 (update_real v monte_carlo_X x) y * 0)%R.
            ++ apply f_equal2 with (f := Rmult); [reflexivity |].
-              apply real_indicator_false.
+              rewrite ?q_eval_indicatorE, ?formula_indicatorE; apply real_indicator_false.
               intro Hboth.
               apply monte_carlo_c_and_spec in Hboth.
               pose proof (Hinvariant v x y) as HA.
@@ -2491,24 +2566,33 @@ Lemma monte_carlo_miss_pre_construct_eval :
           real_indicator (satisfies v (monte_carlo_after_i gamma)))%R.
 Proof.
   intros gamma Hinvariant v.
-  destruct (excluded_middle_informative
-    (satisfies v (monte_carlo_after_i gamma))) as [Htrue | Hfalse].
+  destruct (cformula_satisfies_dec (monte_carlo_after_i gamma) v) as [Htrue | Hfalse].
   - rewrite (real_indicator_true _ Htrue), Rmult_1_r.
     transitivity (q_eval monte_carlo_miss_construct v).
     + unfold monte_carlo_miss_pre_construct, monte_carlo_miss_construct.
+      repeat rewrite q_eval_integral_density by
+        (intro w; cbn [distribution_valid term_eval]; lra).
       cbn [q_eval].
+      (** Recover the event-mask interface after reducing a construct leaf. *)
+      repeat rewrite (FunctionalExtensionality.functional_extensionality
+        _ _ (formula_indicatorE _)).
       apply real_integral_extensional; intro x.
       apply f_equal2 with (f := Rmult); [reflexivity |].
       apply real_integral_extensional; intro y.
       apply f_equal2 with (f := Rmult); [reflexivity |].
-      apply real_indicator_extensional.
+      rewrite ?q_eval_indicatorE, ?formula_indicatorE; apply real_indicator_extensional.
       rewrite monte_carlo_c_and_spec.
       pose proof (Hinvariant v x y) as HA.
-      tauto.
+      mathcomp_tauto.
     + apply monte_carlo_miss_construct_eval.
   - rewrite (real_indicator_false _ Hfalse), Rmult_0_r.
     unfold monte_carlo_miss_pre_construct.
-    cbn [q_eval].
+    repeat rewrite q_eval_integral_density by
+        (intro w; cbn [distribution_valid term_eval]; lra).
+      cbn [q_eval].
+      (** Recover the event-mask interface after reducing a construct leaf. *)
+      repeat rewrite (FunctionalExtensionality.functional_extensionality
+        _ _ (formula_indicatorE _)).
     transitivity (real_integral (fun _ : R => 0%R)).
     + apply real_integral_extensional; intro x.
       transitivity
@@ -2520,7 +2604,7 @@ Proof.
              (distribution_density <{ uniform ( 0, 1 ) }>
                 (update_real v monte_carlo_X x) y * 0)%R.
            ++ apply f_equal2 with (f := Rmult); [reflexivity |].
-              apply real_indicator_false.
+              rewrite ?q_eval_indicatorE, ?formula_indicatorE; apply real_indicator_false.
               intro Hboth.
               apply monte_carlo_c_and_spec in Hboth.
               pose proof (Hinvariant v x y) as HA.
@@ -2537,7 +2621,7 @@ Lemma monte_carlo_p_and_spec :
       psatisfies ps eta /\ psatisfies ps theta.
 Proof.
   intros ps eta theta.
-  unfold p_and, p_not; cbn [psatisfies]; tauto.
+  unfold p_and, p_not; cbn [psatisfies]; mathcomp_tauto.
 Qed.
 
 Lemma monte_carlo_p_eq_spec :
@@ -2550,29 +2634,17 @@ Proof.
   cbn [psatisfies]; lra.
 Qed.
 
+(** Real event masses are monotone for finite measures and measurable events. *)
 Lemma monte_carlo_measure_monotone :
-  forall (mu : Measure) (A B : Assertion),
+  forall (mu : Measure), Subprob mu -> forall (A B : Assertion),
+    measurable_assertion A -> measurable_assertion B ->
     (forall v : state, A v -> B v) ->
     (measure_of mu A <= measure_of mu B)%R.
 Proof.
-  intros mu A B Hsubset.
-  set (C := fun v : state => B v /\ ~ A v).
-  assert (Hpartition :
-    measure_of mu B = (measure_of mu A + measure_of mu C)%R).
-  {
-    transitivity (measure_of mu (fun v => A v \/ C v)).
-    - apply measure_extensional; intro v; unfold C.
-      split.
-      + intro HB.
-        destruct (classic (A v)); tauto.
-      + intro Hor; destruct Hor as [HA | HC].
-        * apply Hsubset; exact HA.
-        * destruct HC as [HB HnotA]; exact HB.
-    - apply measure_additive.
-      intro v; unfold C; tauto.
-  }
-  pose proof (measure_nonnegative mu C).
-  lra.
+  intros mu Hmu A B HA HB Hsubset.
+  apply (proj2 (Bool.reflect_iff _ _ Rstruct.RleP)).
+  exact (MeasureIntegration.ConcreteMeasure.event_monotone
+    (MeasureIntegration.ConcreteMeasure.subprob_finite Hmu) HA HB Hsubset).
 Qed.
 
 Lemma monte_carlo_concentrated_unit_values :
@@ -2597,7 +2669,7 @@ Proof.
   {
     apply measure_extensional.
     intro v; unfold formula_assertion, c_true.
-    cbn [satisfies]; tauto.
+    cbn [satisfies]; mathcomp_tauto.
   }
   split; lra.
 Qed.
@@ -2611,12 +2683,14 @@ Proof.
   intros ps rho gamma Hconcentrated Hsubset.
   pose proof (monte_carlo_concentrated_unit_values ps rho Hconcentrated)
     as [Hrho Htotal].
-  pose proof (monte_carlo_measure_monotone (pstate_measure ps)
+  assert (Hps_admissible : pstate_admissible ps)
+    by (apply subprob_of_mass_one; exact Htotal).
+  pose proof (monte_carlo_measure_monotone (pstate_measure ps) Hps_admissible
     (formula_assertion rho) (formula_assertion gamma)) as Hlower.
-  specialize (Hlower (fun v Hrho_v => Hsubset v Hrho_v)).
-  pose proof (monte_carlo_measure_monotone (pstate_measure ps)
+  specialize (Hlower ltac:(calculation_event) ltac:(calculation_event) (fun v Hrho_v => Hsubset v Hrho_v)).
+  pose proof (monte_carlo_measure_monotone (pstate_measure ps) Hps_admissible
     (formula_assertion gamma) (fun _ : state => True)) as Hupper.
-  specialize (Hupper (fun _ _ => I)).
+  specialize (Hupper ltac:(calculation_event) ltac:(calculation_event) (fun _ _ => I)).
   lra.
 Qed.
 
@@ -2629,6 +2703,8 @@ Proof.
   intros ps rho gamma Hconcentrated Hdisjoint.
   pose proof (monte_carlo_concentrated_unit_values ps rho Hconcentrated)
     as [Hrho Htotal].
+  assert (Hps_admissible : pstate_admissible ps)
+    by (apply subprob_of_mass_one; exact Htotal).
   set (outside := fun v : state => ~ formula_assertion rho v).
   assert (Houtside : measure_of (pstate_measure ps) outside = 0%R).
   {
@@ -2640,14 +2716,16 @@ Proof.
       transitivity
         (measure_of (pstate_measure ps)
           (fun v => formula_assertion rho v \/ outside v)).
-      - apply measure_extensional; intro v; unfold outside; tauto.
-      - apply measure_additive; intro v; unfold outside; tauto.
+      - apply measure_extensional; intro v; unfold outside; mathcomp_tauto.
+      - apply measure_additive;
+        try (apply MeasureIntegration.ConcreteMeasure.subprob_finite; exact Hps_admissible);
+        try calculation_event; intro v; unfold outside; mathcomp_tauto.
     }
     lra.
   }
-  pose proof (monte_carlo_measure_monotone (pstate_measure ps)
+  pose proof (monte_carlo_measure_monotone (pstate_measure ps) Hps_admissible
     (formula_assertion gamma) outside) as Hupper.
-  specialize (Hupper (fun v Hgamma_v =>
+  specialize (Hupper ltac:(calculation_event) ltac:(calculation_event) (fun v Hgamma_v =>
     fun Hrho_v => Hdisjoint v
       ((proj2 (monte_carlo_c_and_spec v rho gamma))
         (conj Hrho_v Hgamma_v)))).
@@ -3249,12 +3327,17 @@ Lemma monte_carlo_scaled_construct_full :
     expectation (pstate_measure ps) (q_eval q) = c.
 Proof.
   intros ps rho gamma q c Hconcentrated Hq Hsubset.
+  assert (Hps_admissible : pstate_admissible ps).
+  { apply subprob_of_mass_one; exact (proj2
+      (monte_carlo_concentrated_unit_values ps rho Hconcentrated)). }
   transitivity
     (expectation (pstate_measure ps)
       (fun v => c * q_eval (QIndicator gamma) v)).
   - apply expectation_extensional; intro v.
-    rewrite Hq; reflexivity.
-  - rewrite expectation_scale, expectation_indicator.
+    rewrite Hq, q_eval_indicatorE; reflexivity.
+  - rewrite expectation_scale by
+      (apply q_expectation_integrable; exact Hps_admissible).
+    rewrite expectation_indicator.
     rewrite (monte_carlo_concentrated_event_full
       ps rho gamma Hconcentrated Hsubset).
     ring.
@@ -3269,12 +3352,17 @@ Lemma monte_carlo_scaled_construct_zero :
     expectation (pstate_measure ps) (q_eval q) = 0%R.
 Proof.
   intros ps rho gamma q c Hconcentrated Hq Hdisjoint.
+  assert (Hps_admissible : pstate_admissible ps).
+  { apply subprob_of_mass_one; exact (proj2
+      (monte_carlo_concentrated_unit_values ps rho Hconcentrated)). }
   transitivity
     (expectation (pstate_measure ps)
       (fun v => c * q_eval (QIndicator gamma) v)).
   - apply expectation_extensional; intro v.
-    rewrite Hq; reflexivity.
-  - rewrite expectation_scale, expectation_indicator.
+    rewrite Hq, q_eval_indicatorE; reflexivity.
+  - rewrite expectation_scale by
+      (apply q_expectation_integrable; exact Hps_admissible).
+    rewrite expectation_indicator.
     rewrite (monte_carlo_concentrated_event_zero
       ps rho gamma Hconcentrated Hdisjoint).
     ring.
@@ -3304,7 +3392,7 @@ Proof.
     (eta1 := monte_carlo_body_wp gamma rhit rmiss)
     (eta2 := monte_carlo_event_probability (rhit + rmiss) gamma).
   - rewrite monte_carlo_body_wp_shape.
-    intros ps Hconcentrated.
+    intros ps Hps_admissible Hconcentrated.
     apply (proj2 (monte_carlo_p_and_spec _ _ _)).
     split.
     + apply (proj2 (monte_carlo_p_eq_spec _ _ _)).
@@ -3334,7 +3422,7 @@ Proof.
           [exact Hconcentrated | | exact Hdisjoint].
         apply monte_carlo_miss_pre_construct_eval; exact Hmiss_invariant.
   - apply monte_carlo_body_event_derivable.
-  - intros ps Hpost; exact Hpost.
+  - intros ps Hps_admissible Hpost; exact Hpost.
 Qed.
 
 Lemma monte_carlo_false_concentration_valid :
@@ -3342,7 +3430,7 @@ Lemma monte_carlo_false_concentration_valid :
     pformula_valid
       (PFImpl (p_concentrated_mass FFalse (PConst 1%R)) eta).
 Proof.
-  intros eta ps Hfalse.
+  intros eta ps Hps_admissible Hfalse.
   unfold p_concentrated_mass in Hfalse.
   apply monte_carlo_p_and_spec in Hfalse.
   destruct Hfalse as [Hconcentrated Hmass].
@@ -3358,7 +3446,7 @@ Proof.
       measure_of (pstate_measure ps) (fun _ : state => True)).
   {
     apply measure_extensional; intro v.
-    unfold formula_assertion, c_true; cbn [satisfies]; tauto.
+    unfold formula_assertion, c_true; cbn [satisfies]; mathcomp_tauto.
   }
   lra.
 Qed.
@@ -3374,7 +3462,7 @@ Proof.
   - apply monte_carlo_false_concentration_valid.
   - apply HFree.
     cbn [pformula_analytical]; exact I.
-  - intros ps Hfalse.
+  - intros ps Hps_admissible Hfalse.
     cbn [psatisfies] in Hfalse; contradiction.
 Qed.
 
@@ -3434,15 +3522,15 @@ Proof.
           (PConst 1%R))
         (eta2 := monte_carlo_event_probability 0
           (monte_carlo_region M k destination)).
-      * intros ps Hpre; exact Hpre.
+      * intros ps Hps_admissible Hpre; exact Hpre.
       * eapply HConseq with
           (eta1 := p_concentrated_mass (monte_carlo_region M k index)
             (PConst 1%R))
           (eta2 := monte_carlo_event_probability (0 + 0)
             (monte_carlo_region M k destination));
-          [intros ps Hpre; exact Hpre | exact Htriple |].
+          [intros ps Hps_admissible Hpre; exact Hpre | exact Htriple |].
         unfold pformula_valid, monte_carlo_event_probability.
-        intro ps; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
+        intros ps Hps_admissible; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
       * unfold pformula_valid, monte_carlo_event_probability,
           monte_carlo_transitions.
         rewrite Hactive.
@@ -3509,7 +3597,7 @@ Lemma monte_carlo_sample_invariant_not :
 Proof.
   intros gamma Hgamma v x y.
   unfold c_not; cbn [satisfies].
-  pose proof (Hgamma v x y); tauto.
+  pose proof (Hgamma v x y); mathcomp_tauto.
 Qed.
 
 Lemma monte_carlo_guard_sample_invariant :
@@ -3627,10 +3715,10 @@ Proof.
           (monte_carlo_hit_probability +
             (1 - monte_carlo_hit_probability))
           <{ ~ $(monte_carlo_guard M) }>).
-      * intros ps Hpre; exact Hpre.
+      * intros ps Hps_admissible Hpre; exact Hpre.
       * exact Htriple.
       * unfold pformula_valid, monte_carlo_event_probability.
-        intro ps; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
+        intros ps Hps_admissible; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
     + assert (Htriple :
         {{ $(p_concentrated_mass (monte_carlo_region M k index) [[ 1 ]]) }}
           $(monte_carlo_body)
@@ -3660,10 +3748,10 @@ Proof.
           (PConst 1%R))
         (eta2 := monte_carlo_event_probability (0 + 0)
           <{ ~ $(monte_carlo_guard M) }>).
-      * intros ps Hpre; exact Hpre.
+      * intros ps Hps_admissible Hpre; exact Hpre.
       * exact Htriple.
       * unfold pformula_valid, monte_carlo_event_probability.
-        intro ps; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
+        intros ps Hps_admissible; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
   - rewrite (monte_carlo_inactive_region_false M k index Hindex Hactive).
     apply monte_carlo_body_from_false_region.
 Qed.
@@ -3691,7 +3779,7 @@ Proof.
   unfold monte_carlo_not_target, c_not.
   cbn [satisfies].
   rewrite monte_carlo_target_spec.
-  tauto.
+  mathcomp_tauto.
 Qed.
 
 Definition monte_carlo_complement_exit_event (M k : nat) : CFormula :=
@@ -3707,7 +3795,7 @@ Proof.
   rewrite !monte_carlo_c_and_spec.
   pose proof (Hgamma v x y).
   pose proof (Hdelta v x y).
-  tauto.
+  mathcomp_tauto.
 Qed.
 
 Lemma monte_carlo_not_target_sample_invariant :
@@ -4040,9 +4128,9 @@ Proof.
              (eta2 := monte_carlo_event_probability
                (monte_carlo_hit_probability + 0)
                (monte_carlo_complement_exit_event M k));
-             [intros ps Hpre; exact Hpre | exact Htriple |].
+             [intros ps Hps_admissible Hpre; exact Hpre | exact Htriple |].
            unfold pformula_valid, monte_carlo_event_probability.
-           intro ps; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
+           intros ps Hps_admissible; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
         -- assert (s = 0)%nat by lia; subst s.
            assert (Hslot_one : monte_carlo_region_slot M index = 1%nat)
              by exact Hslot.
@@ -4085,9 +4173,9 @@ Proof.
              (eta2 := monte_carlo_event_probability
                (0 + (1 - monte_carlo_hit_probability))
                (monte_carlo_complement_exit_event M k));
-             [intros ps Hpre; exact Hpre | exact Htriple |].
+             [intros ps Hps_admissible Hpre; exact Hpre | exact Htriple |].
            unfold pformula_valid, monte_carlo_event_probability.
-           intro ps; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
+           intros ps Hps_admissible; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
       * assert (Htriple :
           {{ $(p_concentrated_mass
             (monte_carlo_region M k index) [[ 1 ]]) }}
@@ -4122,9 +4210,9 @@ Proof.
             (monte_carlo_hit_probability +
               (1 - monte_carlo_hit_probability))
             (monte_carlo_complement_exit_event M k));
-          [intros ps Hpre; exact Hpre | exact Htriple |].
+          [intros ps Hps_admissible Hpre; exact Hpre | exact Htriple |].
         unfold pformula_valid, monte_carlo_event_probability.
-        intro ps; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
+        intros ps Hps_admissible; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
     + assert (Htriple :
         {{ $(p_concentrated_mass
           (monte_carlo_region M k index) [[ 1 ]]) }}
@@ -4153,9 +4241,9 @@ Proof.
           (PConst 1%R))
         (eta2 := monte_carlo_event_probability (0 + 0)
           (monte_carlo_complement_exit_event M k));
-        [intros ps Hpre; exact Hpre | exact Htriple |].
+        [intros ps Hps_admissible Hpre; exact Hpre | exact Htriple |].
       unfold pformula_valid, monte_carlo_event_probability.
-      intro ps; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
+      intros ps Hps_admissible; cbn [p_eq p_and p_not psatisfies pterm_eval]; lra.
   - rewrite (monte_carlo_inactive_region_false M k index Hindex Hactive).
     apply monte_carlo_body_from_false_region.
 Qed.
@@ -4166,7 +4254,7 @@ Lemma monte_carlo_event_probability_symmetric :
       (PFImpl (monte_carlo_event_probability r gamma)
         (p_eq (PExpect (QIndicator gamma)) (PConst r))).
 Proof.
-  intros r gamma ps Hprobability.
+  intros r gamma ps Hps_admissible Hprobability.
   unfold monte_carlo_event_probability in Hprobability.
   apply monte_carlo_p_eq_spec in Hprobability.
   apply monte_carlo_p_eq_spec.
@@ -4189,10 +4277,10 @@ Proof.
   induction m as [|m IH]; intros regions probabilities Hevents.
   - cbn [finite_p_and].
     eapply HConseq with (eta1 := p_true) (eta2 := p_true).
-    + intros ps Hpre; cbn [p_true psatisfies]; tauto.
+    + intros ps Hps_admissible Hpre; cbn [p_true psatisfies]; mathcomp_tauto.
     + apply HFree.
-      cbn [p_true pformula_analytical pterm_analytical]; tauto.
-    + intros ps Htrue; exact Htrue.
+      cbn [p_true pformula_analytical pterm_analytical]; mathcomp_tauto.
+    + intros ps Hps_admissible Htrue; exact Htrue.
   - cbn [finite_p_and].
     apply HAnd.
     + apply IH.
@@ -4200,7 +4288,7 @@ Proof.
     + eapply HConseq with
         (eta1 := pre)
         (eta2 := monte_carlo_event_probability (probabilities m) (regions m)).
-      * intros ps Hpre; exact Hpre.
+      * intros ps Hps_admissible Hpre; exact Hpre.
       * apply Hevents; lia.
       * apply monte_carlo_event_probability_symmetric.
 Qed.
@@ -4212,14 +4300,14 @@ Lemma monte_carlo_termination_condition_expectation :
         <{ ~ $(monte_carlo_guard M) }>)) ps =
     pterm_eval (PExpect (QIndicator <{ ~ $(monte_carlo_guard M) }>)) ps.
 Proof.
-  intros M ps Hadm.
+  intros M ps.
   cbn [pterm_eval condition_pconstruct condition_pconstruct_fuel].
   rewrite !expectation_indicator.
   apply measure_extensional.
   intro v; unfold formula_assertion.
   rewrite monte_carlo_c_and_spec.
   cbn [c_true satisfies].
-  tauto.
+  mathcomp_tauto.
 Qed.
 
 Lemma monte_carlo_complement_condition_shape :
@@ -4255,9 +4343,9 @@ Proof.
       (eta2 := monte_carlo_event_probability
         (monte_carlo_termination_exits M index)
         <{ ~ $(monte_carlo_guard M) }>).
-    + intros ps Hpre; exact Hpre.
+    + intros ps Hps_admissible Hpre; exact Hpre.
     + apply monte_carlo_body_termination_exit_event; exact Hindex.
-    + intros ps Hprobability.
+    + intros ps Hps_admissible Hprobability.
       apply monte_carlo_p_eq_spec.
       unfold monte_carlo_event_probability in Hprobability.
       apply monte_carlo_p_eq_spec in Hprobability.
@@ -4292,7 +4380,7 @@ Proof.
       (eta2 := monte_carlo_event_probability
         (monte_carlo_complement_exits M index)
         (monte_carlo_complement_exit_event M k)).
-    + intros ps Hpre; exact Hpre.
+    + intros ps Hps_admissible Hpre; exact Hpre.
     + apply monte_carlo_body_complement_exit_event; exact Hindex.
     + apply monte_carlo_event_probability_symmetric.
 Qed.
@@ -4410,21 +4498,21 @@ Proof.
   {
     eapply HConseq with (eta1 := eta)
       (eta2 := [[ E[$(q)] = $(c) * monte_carlo_loop_mass ]]).
-    - intros ps Hpre.
+    - intros ps Hps_admissible Hpre.
       apply monte_carlo_p_and_spec in Hpre; exact (proj1 Hpre).
     - exact Hderivation.
-    - intros ps Hpost; exact Hpost.
+    - intros ps Hps_admissible Hpost; exact Hpost.
   }
   assert (Hrigid :
     {{ $(eta) /\ $(rigid) }} $(command) {{ $(rigid) }}).
   {
     eapply HConseq with (eta1 := rigid) (eta2 := rigid).
-    - intros ps Hpre.
+    - intros ps Hps_admissible Hpre.
       apply monte_carlo_p_and_spec in Hpre; exact (proj2 Hpre).
     - apply HFree.
       unfold rigid.
-      cbn [p_eq p_and p_not pformula_analytical pterm_analytical]; tauto.
-    - intros ps Hpost; exact Hpost.
+      cbn [p_eq p_and p_not pformula_analytical pterm_analytical]; mathcomp_tauto.
+    - intros ps Hps_admissible Hpost; exact Hpost.
   }
   assert (Hdesired :
     {{ $(eta) /\ $(rigid) }} $(command) {{ $(desired) }}).
@@ -4434,10 +4522,10 @@ Proof.
       (eta2 := [[
         (E[$(q)] = $(c) * monte_carlo_loop_mass) /\ $(rigid)
       ]]).
-    - intros ps Hpre; exact Hpre.
+    - intros ps Hps_admissible Hpre; exact Hpre.
     - apply HAnd; assumption.
     - unfold desired, rigid.
-      intros ps Hpost.
+      intros ps Hps_admissible Hpost.
       apply monte_carlo_p_and_spec in Hpost.
       destruct Hpost as [Hvalue Hmass].
       apply monte_carlo_p_eq_spec.
@@ -4450,10 +4538,10 @@ Proof.
   - change
       ({{ $(eta) /\ $(rigid) }} $(command) {{ $(desired) }}).
     exact Hdesired.
-  - cbn [prob_logic_var_occurs_pterm]; tauto.
+  - cbn [prob_logic_var_occurs_pterm]; mathcomp_tauto.
   - unfold desired.
     cbn [p_eq p_and p_not prob_logic_var_occurs_pformula
-      prob_logic_var_occurs_pterm]; tauto.
+      prob_logic_var_occurs_pterm]; mathcomp_tauto.
 Qed.
 
 Lemma monte_carlo_initial_complement_solution :
@@ -4500,9 +4588,9 @@ Proof.
       E[$(condition_pconstruct (QIndicator c_true)
         <{ ~ $(monte_carlo_guard M) }>)] = 1
     ]]).
-  - intros ps Hpre; exact Hpre.
+  - intros ps Hps_admissible Hpre; exact Hpre.
   - exact Hunit.
-  - intros ps Hpost.
+  - intros ps Hps_admissible Hpost.
     apply monte_carlo_p_eq_spec in Hpost.
     apply monte_carlo_p_eq_spec.
     cbn [pterm_eval] in Hpost |- *.
@@ -4551,7 +4639,7 @@ Lemma monte_carlo_remove_exit_conditioning :
             $(monte_carlo_bernoulli_mass M k)
         ]]).
 Proof.
-  intros M k ps Hpost.
+  intros M k ps Hps_admissible Hpost.
   apply monte_carlo_p_and_spec in Hpost.
   destruct Hpost as [Htermination Hcomplement].
   apply monte_carlo_p_eq_spec in Htermination.
@@ -4569,9 +4657,9 @@ Proof.
   { unfold mu, NotGuard; exact Htermination. }
   assert (Htotal : measure_of mu (fun _ : state => True) = 1%R).
   {
-    pose proof (monte_carlo_measure_monotone mu NotGuard
-      (fun _ : state => True) (fun _ _ => I)) as Hlower.
-    pose proof (measure_subprobability mu) as Hupper.
+    pose proof (monte_carlo_measure_monotone mu Hps_admissible NotGuard
+      (fun _ : state => True) ltac:(calculation_event) ltac:(calculation_event) (fun _ _ => I)) as Hlower.
+    pose proof (measure_subprobability mu Hps_admissible) as Hupper.
     lra.
   }
   assert (Hguard : measure_of mu Guard = 0%R).
@@ -4584,21 +4672,23 @@ Proof.
       - apply measure_extensional; intro v.
         unfold Guard, NotGuard, formula_assertion, c_not.
         cbn [satisfies].
-        tauto.
-      - apply measure_additive.
+        mathcomp_tauto.
+      - apply measure_additive;
+        try (apply MeasureIntegration.ConcreteMeasure.subprob_finite; exact Hps_admissible);
+        try calculation_event.
         intro v.
         unfold Guard, NotGuard, formula_assertion, c_not.
         cbn [satisfies].
-        tauto.
+        mathcomp_tauto.
     }
     lra.
   }
   set (InsideComplement := fun v : state => NotTarget v /\ Guard v).
   assert (Hinside_zero : measure_of mu InsideComplement = 0%R).
   {
-    pose proof (monte_carlo_measure_monotone mu InsideComplement Guard)
+    pose proof (monte_carlo_measure_monotone mu Hps_admissible InsideComplement Guard)
       as Hupper.
-    specialize (Hupper (fun v Hinside => proj2 Hinside)).
+    specialize (Hupper ltac:(calculation_event) ltac:(calculation_event) (fun v Hinside => proj2 Hinside)).
     pose proof (measure_nonnegative mu InsideComplement).
     lra.
   }
@@ -4617,15 +4707,17 @@ Proof.
           c_not.
         rewrite monte_carlo_c_and_spec.
         cbn [satisfies].
-        tauto.
-      - apply measure_additive.
+        mathcomp_tauto.
+      - apply measure_additive;
+        try (apply MeasureIntegration.ConcreteMeasure.subprob_finite; exact Hps_admissible);
+        try calculation_event.
         intro v.
         unfold Complement, InsideComplement, NotTarget, NotGuard,
           Guard, formula_assertion, monte_carlo_complement_exit_event,
           c_not.
         rewrite monte_carlo_c_and_spec.
         cbn [satisfies].
-        tauto.
+        mathcomp_tauto.
     }
     lra.
   }
@@ -4638,13 +4730,15 @@ Proof.
       unfold Target, NotTarget, formula_assertion,
         monte_carlo_not_target, c_not.
       cbn [satisfies].
-      tauto.
-    - apply measure_additive.
+      mathcomp_tauto.
+    - apply measure_additive;
+        try (apply MeasureIntegration.ConcreteMeasure.subprob_finite; exact Hps_admissible);
+        try calculation_event.
       intro v.
       unfold Target, NotTarget, formula_assertion,
         monte_carlo_not_target, c_not.
       cbn [satisfies].
-      tauto.
+      mathcomp_tauto.
   }
   apply monte_carlo_p_eq_spec.
   cbn [pterm_eval].
@@ -4677,7 +4771,7 @@ Proof.
       (Pr[$(monte_carlo_complement_exit_event M k)] =
         $(1 - monte_carlo_bernoulli_mass M k))
     ]]).
-  - intros ps Hpre; exact Hpre.
+  - intros ps Hps_admissible Hpre; exact Hpre.
   - apply HAnd.
     + apply monte_carlo_positive_termination_loop; assumption.
     + apply monte_carlo_positive_complement_loop; assumption.
@@ -4711,7 +4805,7 @@ Proof.
         monte_carlo_H 0 monte_carlo_i < INR 1)%R.
     unfold update_real_values.
     destruct (real_program_var_eq_dec monte_carlo_i monte_carlo_H);
-      [pose proof monte_carlo_variables_distinct; tauto |].
+      [pose proof monte_carlo_variables_distinct; mathcomp_tauto |].
     destruct (real_program_var_eq_dec monte_carlo_i monte_carlo_i);
       [cbn [INR]; lra | contradiction].
   - cbn [update_real update_real_values].
@@ -4750,7 +4844,7 @@ Lemma monte_carlo_normalized_initializes_positive_region :
 Proof.
   intros M k HM Hk.
   rewrite monte_carlo_initial_assignments_wp_shape.
-  intros ps Hnormalized.
+  intros ps Hps_admissible Hnormalized.
   unfold monte_carlo_normalized in Hnormalized.
   apply monte_carlo_p_eq_spec in Hnormalized.
   apply (proj2 (monte_carlo_p_and_spec _ _ _)).
@@ -4761,7 +4855,7 @@ Proof.
     apply measure_extensional.
     intro v; unfold formula_assertion.
     split; intros _.
-    + unfold c_true; cbn [satisfies]; tauto.
+    + unfold c_true; cbn [satisfies]; mathcomp_tauto.
     + apply monte_carlo_initialized_region_valid; assumption.
   - apply (proj2 (monte_carlo_p_eq_spec _ _ _)).
     exact Hnormalized.
@@ -4802,7 +4896,7 @@ Proof.
           (PConst 1%R)).
       * apply HRealAssign.
       * apply monte_carlo_positive_loop_probability; assumption.
-  - intros ps Hprobability.
+  - intros ps Hps_admissible Hprobability.
     apply monte_carlo_p_eq_spec in Hprobability.
     apply monte_carlo_p_eq_spec.
     cbn [pterm_eval] in *.
@@ -4833,7 +4927,7 @@ Proof.
     unfold initialized, update_real; cbn.
     unfold update_real_values.
     destruct (real_program_var_eq_dec monte_carlo_i monte_carlo_H);
-      [pose proof monte_carlo_variables_distinct; tauto |].
+      [pose proof monte_carlo_variables_distinct; mathcomp_tauto |].
     destruct (real_program_var_eq_dec monte_carlo_i monte_carlo_i);
       [reflexivity | contradiction].
   }
@@ -4870,7 +4964,7 @@ Lemma monte_carlo_normalized_initializes_zero_state :
           (p_concentrated_mass monte_carlo_zero_state (PConst 1%R))))).
 Proof.
   rewrite monte_carlo_zero_initial_assignments_wp_shape.
-  intros ps Hnormalized.
+  intros ps Hps_admissible Hnormalized.
   unfold monte_carlo_normalized in Hnormalized.
   apply monte_carlo_p_eq_spec in Hnormalized.
   apply (proj2 (monte_carlo_p_and_spec _ _ _)).
@@ -4881,7 +4975,7 @@ Proof.
     apply measure_extensional.
     intro v; unfold formula_assertion.
     split; intros _.
-    + unfold c_true; cbn [satisfies]; tauto.
+    + unfold c_true; cbn [satisfies]; mathcomp_tauto.
     + apply monte_carlo_initialized_zero_state_valid.
   - apply (proj2 (monte_carlo_p_eq_spec _ _ _)).
     exact Hnormalized.
@@ -4937,9 +5031,9 @@ Proof.
     eapply HConseq with
       (eta1 := p_concentrated_mass monte_carlo_zero_state (PConst 1%R))
       (eta2 := p_concentrated_mass monte_carlo_zero_state (PConst 1%R)).
-    - intros ps Hpre; exact Hpre.
+    - intros ps Hps_admissible Hpre; exact Hpre.
     - exact Hloop.
-    - intros ps Hconcentrated.
+    - intros ps Hps_admissible Hconcentrated.
       apply monte_carlo_p_eq_spec.
       cbn [pterm_eval].
       rewrite expectation_indicator.
@@ -4963,7 +5057,7 @@ Proof.
         (eta2 := p_concentrated_mass monte_carlo_zero_state (PConst 1%R)).
       * apply HRealAssign.
       * exact Hloop_probability.
-  - intros ps Hprobability.
+  - intros ps Hps_admissible Hprobability.
     apply monte_carlo_p_eq_spec in Hprobability.
     apply monte_carlo_p_eq_spec.
     cbn [pterm_eval] in *.

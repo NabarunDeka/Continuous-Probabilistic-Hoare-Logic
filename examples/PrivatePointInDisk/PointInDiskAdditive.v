@@ -1,58 +1,24 @@
 (**
-  PointInDiskAdditive.v -- the same privacy-preserving disk-membership test
-  as PointInDiskInPlace.v, written in the idiomatic Laplace-mechanism shape:
-  draw centred noise into its OWN variable, then add it.
+  PointInDiskAdditive.v
 
-      d      := (px - cx)^2 + (py - cy)^2;
-      n      <- sample(Laplace(0, b));      (* location is the constant 0 *)
-      d      := d + n;
+  Program ([pda_prog px py cx cy b]):
+      d := (px - cx)^2 + (py - cy)^2;
+      n <- sample(laplace(0, b));
+      d := d + n;
       inside := (d < 1)
-
-  THE TRIPLE ([pda_correct], for [0 < b], writing [D] for the true squared
-  distance [(px-cx)^2 + (py-cy)^2]):
-
-      { Pr[tt] = 1 }
-          pda_prog px py cx cy b
-      { Pr[inside] = laplace_cdf D b 1 }
-
-  -- textually the same postcondition as PointInDiskInPlace.v's
-  [pdi_correct], so the two programs are proved to have identical output
-  distributions.  [pda_agrees_with_in_place] records that.
-
-  WHY BOTH EXIST.  The mechanisms differ only in where the noise is written,
-  and the derivations differ only in WHAT the opening assignment closes:
-
-    - in-place: the sample's weakest precondition mentions [d] in the noise
-      LOCATION, and [d := sqdist] closes that;
-    - here: the location is already the constant [0], and it is the GUARD
-      [d + n < 1] inside the indicator that mentions [d]; the same
-      [d := sqdist] closes that instead.
-
-  Either way the integral becomes state-independent, which is what makes the
-  triple reachable from [Pr[tt] = 1] alone.  This file is the one to extend
-  towards a differential-privacy statement: [output = f(x) + Lap(b)] is the
-  shape the DP literature uses, and the noise here is a named variable that
-  a sensitivity argument can talk about.
-
-  THE ONE EXTRA STEP.  Centred noise puts the answer in the form
-  [laplace_cdf 0 b (1 - D)] rather than [laplace_cdf D b 1].  These agree by
-  translation invariance ([pda_cdf_shift]); the in-place variant lands on the
-  second form directly and needs no such bridge.
-
-  Everything else -- why the squared distance rather than the distance, why
-  the strict test, why the coordinates are Rocq reals rather than program
-  variables, and why perturbing the four coordinates separately is NOT
-  derivable -- is as described in PointInDiskInPlace.v and in
-  flags/FLAGS.md F14.
+  Triple ([pda_correct], for 0 < b; post [pda_post], D := [pdi_sqdist px py cx cy]):
+      { Pr[true] = 1 }
+        pda_prog px py cx cy b
+      { Pr[inside] = E[ integral z ~ laplace(D, b), indicator[z <= 1] ] }
 *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Strings.String.
 From Stdlib Require Import Lra.
-From Stdlib Require Import ClassicalDescription.
 Require Import CPHL.
 Require Import SampleBeforeLoop.
-Require Import HalfLaplaceRejection.
+Require Import CdfAssertions.
+Require Import DiskLaplaceFacts.
 Require Import PointInDiskInPlace.
 
 Open Scope R_scope.
@@ -63,7 +29,7 @@ Local Open Scope cphl_hoare_scope.
 (** * The program
 
     As in PointInDiskInPlace.v the four coordinates are Rocq reals, so
-    [pda_sqdist] is a CLOSED term. *)
+    [pda_sqdist] is a closed polynomial term in the parameters. *)
 
 Definition pda_d : RealProgramVar := real_program_var "pda_d".
 Definition pda_n : RealProgramVar := real_program_var "pda_n".
@@ -93,24 +59,6 @@ Definition pda_prog (px py cx cy b : R) : Cmd :=
      pda_d      := $(pda_shift);
      pda_inside b= $(pda_test) }>.
 
-(** * Translation invariance of the Laplace CDF
-
-    Centred noise answers at cutoff [1 - D] about location [0]; the in-place
-    variant answers at cutoff [1] about location [D].  Same number. *)
-
-Lemma pda_cdf_shift :
-  forall D b : R, laplace_cdf 0 b (1 - D) = laplace_cdf D b 1.
-Proof.
-  intros D b.
-  unfold laplace_cdf.
-  destruct (Rle_dec (1 - D) 0) as [H1 | H1];
-    destruct (Rle_dec 1 D) as [H2 | H2].
-  - replace (1 - D - 0)%R with (1 - D)%R by ring; reflexivity.
-  - exfalso; lra.
-  - exfalso; lra.
-  - replace (1 - D - 0)%R with (1 - D)%R by ring; reflexivity.
-Qed.
-
 (** * The squared distance evaluates to [pda_D] in every state *)
 
 Lemma pda_sqdist_value :
@@ -122,40 +70,12 @@ Proof.
   cbn [term_eval]; ring.
 Qed.
 
-(** * The single integral produced by the sample
-
-    The noise location is the constant [0]; it is the GUARD that the opening
-    assignment has already closed. *)
-
-Lemma pda_integral :
-  forall (px py cx cy b : R) (v : state),
-    (0 < b)%R ->
-    q_eval
-      [[ integral pda_n ~ $(Laplace (TConst 0) (TConst b)),
-         indicator[ $(pda_sqdist px py cx cy) + pda_n < 1 ] ]] v
-    = laplace_cdf (pda_D px py cx cy) b 1.
-Proof.
-  intros px py cx cy b v Hb.
-  cbn [q_eval distribution_density].
-  rewrite (real_integral_extensional
-             _ (fun z =>
-                  ((1 / (2 * b)) * exp (- Rabs (z - 0) / b)) *
-                  real_indicator (z < 1 - pda_D px py cx cy)%R)).
-  - rewrite laplace_integral_strict_cdf by exact Hb.
-    apply pda_cdf_shift.
-  - intro z.
-    unfold pda_test, c_lt, update_real, update_real_values.
-    cbn [q_eval satisfies c_not term_eval real_program_values].
-    rewrite rpv_eq_dec_refl.
-    rewrite pda_sqdist_value.
-    rewrite (real_indicator_extensional _ (z < 1 - pda_D px py cx cy)%R) by lra.
-    cbn [term_eval]; ring.
-Qed.
-
-(** * The weakest precondition *)
+(** * The postcondition: the same syntactic CDF as PointInDiskInPlace.v *)
 
 Definition pda_post (px py cx cy b : R) : PFormula :=
-  [[ Pr[pda_inside] = $(laplace_cdf (pda_D px py cx cy) b 1) ]].
+  [[ Pr[pda_inside] = E[$(pdi_cdf px py cx cy b)] ]].
+
+(** * The weakest preconditions *)
 
 Definition pda_after_add (px py cx cy b : R) : PFormula :=
   subst_bool_pformula pda_inside pda_test (pda_post px py cx cy b).
@@ -167,44 +87,61 @@ Definition pda_after_assign (px py cx cy b : R) : PFormula :=
   sample_pformula pda_n (pda_noise b) (pda_after_sample px py cx cy b).
 
 Definition pda_pre (px py cx cy b : R) : PFormula :=
-  [[ E[ integral pda_n ~ $(Laplace (TConst 0) (TConst b)),
+  [[ E[ integral pda_n ~ $(pda_noise b),
         indicator[ $(pda_sqdist px py cx cy) + pda_n < 1 ] ]
-     = $(laplace_cdf (pda_D px py cx cy) b 1) ]].
+     = E[ integral pda_n ~ $(pda_noise b), $(pdi_cdf px py cx cy b) ] ]].
 
-(** The opening assignment substitutes into the indicator's GUARD; the
-    integral's bound variable [pda_n] is untouched.  Definitional. *)
 Lemma pda_pre_is_wp :
   forall px py cx cy b : R,
     subst_real_pformula pda_d (pda_sqdist px py cx cy)
       (pda_after_assign px py cx cy b) = pda_pre px py cx cy b.
-Proof. intros; reflexivity. Qed.
+Proof. intros; vm_compute; reflexivity. Qed.
 
-Lemma pda_normalized_implies_pre :
+(** * Evaluating the two sides
+
+    Centred noise lands on the CDF at [1 - D] about [0]; translation
+    invariance ([disk_lap_atmost_shift]) moves it to [1] about [D]. *)
+
+Lemma pda_pre_valid :
   forall px py cx cy b : R,
-    (0 < b)%R ->
+    0 < b ->
     pformula_valid [[ Pr[true] = 1 -> $(pda_pre px py cx cy b) ]].
 Proof.
   intros px py cx cy b Hb ps Hadm.
-  cbn [psatisfies]; intro Hpre.
-  apply psatisfies_p_eq in Hpre.
-  cbn [pterm_eval] in Hpre.
-  unfold pda_pre.
-  apply psatisfies_p_eq.
-  cbn [pterm_eval].
-  apply t3_expect_const.
-  - exact Hpre.
-  - intro v; apply pda_integral; exact Hb.
+  cbn [psatisfies]; intros _.
+  unfold pda_pre; apply psatisfies_p_eq; cbn [pterm_eval].
+  apply expectation_extensional; intro v.
+  rewrite (disk_integral_const _ _ (pdi_cdf px py cx cy b) v
+             (lap_atmost (pdi_D px py cx cy) b 1)).
+  - unfold pda_noise.
+    rewrite (disk_laplace_indicator pda_n _ 0 b _
+               (fun r => r < 1 - pda_D px py cx cy)).
+    + transitivity (lap_below 0 b (1 - pda_D px py cx cy)); [reflexivity |].
+      rewrite <- (lap_atmost_below 0 b Hb).
+      rewrite (disk_lap_atmost_shift (pdi_D px py cx cy) b 1 Hb).
+      unfold pda_D, pdi_D; reflexivity.
+    + exact Hb.
+    + reflexivity.
+    + intro r; unfold c_lt; cbn [satisfies c_not].
+      change (term_eval (TAdd (pda_sqdist px py cx cy) (TProgVar pda_n))
+                (update_real v pda_n r))
+        with (term_eval (pda_sqdist px py cx cy) (update_real v pda_n r)
+              + term_eval (TProgVar pda_n) (update_real v pda_n r)).
+      rewrite update_real_same, pda_sqdist_value.
+      cbn [term_eval]; split; intro H; lra.
+  - cbn [distribution_valid term_eval pda_noise]; exact Hb.
+  - intro w; apply pdi_cdf_value; exact Hb.
 Qed.
 
 Lemma pda_noise_valid_under :
   forall (b : R) (pre : PFormula),
-    (0 < b)%R ->
+    0 < b ->
     pformula_valid
       [[ $(pre) -> almost_sure[$(distribution_valid_formula (pda_noise b))] ]].
 Proof.
   intros b pre Hb ps Hadm.
-  cbn [psatisfies]; intro Hignore.
-  clear Hignore; revert ps.
+  cbn [psatisfies]; intros _.
+  revert ps Hadm.
   apply p_almost_sure_of_pointwise.
   intro v.
   unfold pda_noise.
@@ -216,10 +153,10 @@ Qed.
 
 Theorem pda_correct :
   forall px py cx cy b : R,
-    (0 < b)%R ->
+    0 < b ->
     {{ Pr[true] = 1 }}
       $(pda_prog px py cx cy b)
-    {{ Pr[pda_inside] = $(laplace_cdf (pda_D px py cx cy) b 1) }}.
+    {{ $(pda_post px py cx cy b) }}.
 Proof.
   intros px py cx cy b Hb.
   unfold pda_prog.
@@ -229,12 +166,12 @@ Proof.
                  (pda_after_assign px py cx cy b))
       (eta2 := pda_after_assign px py cx cy b).
     + rewrite pda_pre_is_wp.
-      apply pda_normalized_implies_pre; exact Hb.
+      apply pda_pre_valid; exact Hb.
     + apply HRealAssign.
-    + intro ps; cbn [psatisfies]; tauto.
+    + intros ps _; cbn [psatisfies]; tauto.
   - eapply HSeq with (eta2 := pda_after_sample px py cx cy b).
     + apply HRealSample.
-      * intro ps; cbn [psatisfies]; intro H; exact H.
+      * intros ps _; cbn [psatisfies]; intro H; exact H.
       * apply pda_noise_valid_under; exact Hb.
     + eapply HSeq with (eta2 := pda_after_add px py cx cy b).
       * apply HRealAssign.
@@ -243,18 +180,12 @@ Qed.
 
 (** * Cross-check against the in-place variant
 
-    Both files define the same squared distance, so [pdi_correct] and
-    [pda_correct] assert the same probability for the same inputs: the two
-    mechanisms are output-equivalent even though the noise is written
-    differently.
-
-    This is a DEFINITIONAL check, not an independent derivation.  Both
-    proofs run through [laplace_integral_strict_cdf] and [t3_expect_const],
-    so unlike the MaxOfTwoUniforms.v / TriangularRejection.v pair this does
-    not cross-validate an axiom -- it only confirms the two programs were
-    given the same specification. *)
+    [pda_post] and [pdi_post] assert the same syntactic CDF for
+    [Pr[inside]], so the two mechanisms are output-equivalent. *)
 Lemma pda_agrees_with_in_place :
   forall px py cx cy b : R,
-    laplace_cdf (pda_D px py cx cy) b 1
-    = laplace_cdf (pdi_D px py cx cy) b 1.
-Proof. intros; reflexivity. Qed.
+    pda_post px py cx cy b =
+    [[ Pr[pda_inside] = E[$(pdi_cdf px py cx cy b)] ]]
+    /\ pdi_post px py cx cy b =
+    [[ Pr[pdi_inside] = E[$(pdi_cdf px py cx cy b)] ]].
+Proof. intros; split; reflexivity. Qed.

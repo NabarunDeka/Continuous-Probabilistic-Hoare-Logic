@@ -54,11 +54,9 @@ Check hoare_derivable_sound.
 Check hoare_derivable_sound_joint.
 Check hoare_derivable_sound_result.
 
-Require SVT SVT_notation MonteCarloEst.
-Check SVT.svt_01_bot_top_probability.
+Require SVT_notation.
 Check SVT_notation.run_01_bot_top_probability.
 Check SVT_notation.run_11_bot_top_probability.
-Check MonteCarloEst.monte_carlo_estimator_probability.
 ```
 
 Compile it using the same switch and load path as the build:
@@ -67,10 +65,10 @@ Compile it using the same switch and load path as the build:
 opam exec --switch=.toolchain -- rocq compile -q -Q . "" CheckSoundness.v
 ```
 
-The exponential integral identities used by SVT are proved in
+The exponential integral identities used by SVT_notation are proved in
 `ExponentialIntegrals.v`. One calculation axiom remains in
-`AnalyticalCalculations.v`: the quarter-disk identity for Monte Carlo.
-It is not an assumption of the general soundness theorem.
+`AnalyticalCalculations.v`: the quarter-disk identity. No module in the
+build uses it, and it is not an assumption of the general soundness theorem.
 
 ## Build diagnostics
 

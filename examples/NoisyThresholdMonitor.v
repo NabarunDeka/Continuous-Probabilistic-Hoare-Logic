@@ -1,41 +1,30 @@
 (**
-  NoisyThresholdMonitor.v -- repeated noisy thresholding.
+  NoisyThresholdMonitor.v
 
+  Program ([ntm_prog mu b a c]):
+
+      left := ff;
       active := tt;
-      left   := ff;
       while active do
-        x      <- sample(Laplace(mu, b));
-        left   := (x < a);
-        active := (a <= x  /\  x < c)
+        x <- sample(laplace(mu, b));
+        left := (x < a);
+        active := (a <= x /\ x < c)
       end
 
-  THE TRIPLES ([ntm_left_probability] and [ntm_right_probability], for
-  [0 < b] and [a <= c], writing [F] for the Laplace CDF at [(mu, b)]):
+  CDF formula ([ntm_cdf mu b u F]):
 
-      { E[1_tt] = y }
-          ntm_prog mu b a c
-      { Pr[left  /\ ~active]  =  F a / (F a + 1 - F c) * y }
+      Pr[tt] = 1  ->  E[ integral z ~ laplace(mu, b), 1_(z <= u) ] = F
 
-      { E[1_tt] = y }
-          ntm_prog mu b a c
-      { Pr[~left /\ ~active]  =  (1 - F c) / (F a + 1 - F c) * y }
+  Triple ([ntm_left_probability], for 0 < b, a <= c, and Fa, Fc such that
+  [ntm_cdf mu b a Fa] and [ntm_cdf mu b c Fc] are valid):
 
-  A monitor that redraws until the noisy reading leaves the band [a, c),
-  then reports WHICH side it left by.  Codex's presentation nests two
-  conditionals in the body; they are unnecessary.  Assigning the two
-  booleans directly gives the same program and keeps the body clear of
-  [HIfEq]'s shape restriction altogether.
+      { E[1_tt] = y }  ntm_prog mu b a c
+      { E[1_(left /\ ~active)] = (Fa / (Fa + (1 - Fc))) * y }
 
-  WHAT IS NEW HERE.  Two distinct exit events, so the postcondition's [q]
-  actually selects between them: the two triples above come from ONE
-  certificate, differing only in [q] and the exit mass.  Their constants
-  sum to 1 ([ntm_exhaustive]), so the monitor terminates almost surely and
-  reports exactly one side.  The loop equation is the same in both cases,
+  Triple ([ntm_right_probability], same hypotheses):
 
-      s = (F c - F a) * s + r,
-
-  differing only in the exit mass [r] -- [F a] on the left, [1 - F c] on the
-  right.  That is precisely the role [q] plays in [HWhile].
+      { E[1_tt] = y }  ntm_prog mu b a c
+      { E[1_(~left /\ ~active)] = ((1 - Fc) / (Fa + (1 - Fc))) * y }
 *)
 
 From Stdlib Require Import Reals.
@@ -46,6 +35,9 @@ From Stdlib Require Import ClassicalDescription.
 From Stdlib Require Import Classical.
 Require Import CPHL.
 Require Import SampleBeforeLoop.
+Require Import MeasureIntegration CdfLibraryFacts.
+Require Import CPHLFacts.CalculationFacts.
+Require Import CdfAssertions.
 Require Import HalfLaplaceRejection.
 
 Open Scope R_scope.
@@ -54,17 +46,6 @@ Local Open Scope cphl_scope.
 Local Open Scope cphl_hoare_scope.
 
 (** * Local helpers *)
-
-Lemma ntm_real_integral_minus :
-  forall f g : R -> R,
-    real_integral (fun x => (f x - g x)%R) =
-    (real_integral f - real_integral g)%R.
-Proof.
-  intros f g.
-  transitivity (real_integral (fun x => (f x + (-1) * g x)%R)).
-  - apply real_integral_extensional; intro x; ring.
-  - rewrite real_integral_add, real_integral_scale; ring.
-Qed.
 
 Lemma ntm_satisfies_c_and :
   forall (v : state) (g1 g2 : CFormula),
@@ -85,6 +66,7 @@ Qed.
 (** * The program *)
 
 Definition ntm_x : RealProgramVar := real_program_var "ntm_x".
+Definition ntm_z : RealProgramVar := real_program_var "ntm_z".
 Definition ntm_active : BoolProgramVar := bool_program_var "ntm_active".
 Definition ntm_left : BoolProgramVar := bool_program_var "ntm_left".
 Definition ntm_y : ProbLogicVar := prob_logic_var "ntm_y".
@@ -116,21 +98,21 @@ Definition ntm_prog (mu bb a c : R) : Cmd :=
      ntm_active b= true;
      $(ntm_loop mu bb a c) }>.
 
-Definition ntm_F (mu bb u : R) : R := laplace_cdf mu bb u.
+(** The two reported events. *)
+Definition ntm_reported_left : PConstruct :=
+  [[ indicator[ntm_left /\ ~ $(ntm_guard)] ]].
+Definition ntm_reported_right : PConstruct :=
+  [[ indicator[(~ ntm_left) /\ ~ $(ntm_guard)] ]].
 
-(** * Satisfaction of the atomic formulas, after a sample
-
-    Building these first, and composing them, avoids having to steer
-    [rewrite] underneath [c_not]'s implication encoding. *)
+(** * Satisfaction of the atomic formulas, after a sample *)
 
 Lemma ntm_sat_below :
   forall (u z : R) (v : state),
     satisfies (update_real v ntm_x z) (ntm_below u) <-> (z < u)%R.
 Proof.
   intros u z v.
-  unfold ntm_below, c_lt, c_not, update_real, update_real_values.
-  cbn [satisfies term_eval real_program_values].
-  rewrite rpv_eq_dec_refl.
+  unfold ntm_below, c_lt, c_not.
+  cbn [satisfies]; rewrite update_real_same; cbn [term_eval].
   split.
   - intro H.
     destruct (Rlt_dec z u) as [Hd | Hd]; [exact Hd |].
@@ -143,9 +125,8 @@ Lemma ntm_sat_above :
     satisfies (update_real v ntm_x z) (ntm_above u) <-> (u <= z)%R.
 Proof.
   intros u z v.
-  unfold ntm_above, update_real, update_real_values.
-  cbn [satisfies term_eval real_program_values].
-  rewrite rpv_eq_dec_refl.
+  unfold ntm_above.
+  cbn [satisfies]; rewrite update_real_same; cbn [term_eval].
   split; intro H; exact H.
 Qed.
 
@@ -198,119 +179,76 @@ Proof.
     + intro Hin; apply ntm_sat_inside in Hin; lra.
 Qed.
 
-(** * Pointwise indicator identities
+(** * Laplace masses of the three regions
 
-    Three events, all differences or complements of half-lines:
-      - still inside the band        [a <= z < c]
-      - exited on the left           [z < a]
-      - exited on the right          [c <= z] *)
+    The line splits into [z < a], [a <= z < c] and [c <= z]. *)
 
-Lemma ntm_indicator_inside :
-  forall (a c z : R) (v : state),
-    (a <= c)%R ->
-    real_indicator (satisfies (update_real v ntm_x z) (ntm_inside a c)) =
-    (real_indicator (z < c)%R - real_indicator (z < a)%R)%R.
+Lemma ntm_lap_split :
+  forall mu bb a c : R,
+    (0 < bb)%R -> (a <= c)%R ->
+    real_integral
+      (fun z => lap_density mu bb z * real_indicator ((a <= z)%R /\ (z < c)%R)) =
+    (1 - lap_below mu bb a - lap_above mu bb c)%R.
 Proof.
-  intros a c z v Hac.
-  rewrite (real_indicator_extensional _ _ (ntm_sat_inside a c z v)).
-  destruct (Rlt_dec z a) as [Hz | Hz].
-  - rewrite (real_indicator_false _) by (intros [H1 H2]; lra).
-    rewrite (real_indicator_true (z < c)%R) by lra.
-    rewrite (real_indicator_true (z < a)%R Hz).
-    ring.
-  - destruct (Rlt_dec z c) as [Hc | Hc].
-    + rewrite (real_indicator_true _ (conj (Rnot_lt_le _ _ Hz) Hc)).
-      rewrite (real_indicator_true (z < c)%R Hc).
-      rewrite (real_indicator_false (z < a)%R) by lra.
-      ring.
-    + rewrite (real_indicator_false _) by (intros [H1 H2]; lra).
-      rewrite (real_indicator_false (z < c)%R) by lra.
-      rewrite (real_indicator_false (z < a)%R) by lra.
-      ring.
+  intros mu bb a c Hb Hac.
+  pose proof (lap_below_above mu bb Hb a) as Htot.
+  assert (Hsplit :
+    lap_above mu bb a =
+    (real_integral
+       (fun z => lap_density mu bb z * real_indicator ((a <= z)%R /\ (z < c)%R)) +
+     lap_above mu bb c)%R).
+  { unfold lap_above.
+    rewrite <- real_integral_add.
+    - apply real_integral_extensional; intro z.
+      destruct (Rlt_dec z a) as [Hza | Hza].
+      + rewrite (real_indicator_false (a <= z)%R) by lra.
+        rewrite (real_indicator_false ((a <= z)%R /\ (z < c)%R)) by lra.
+        rewrite (real_indicator_false (c <= z)%R) by lra; ring.
+      + rewrite (real_indicator_true (a <= z)%R) by lra.
+        destruct (Rlt_dec z c) as [Hzc | Hzc].
+        * rewrite (real_indicator_true ((a <= z)%R /\ (z < c)%R)) by lra.
+          rewrite (real_indicator_false (c <= z)%R) by lra; ring.
+        * rewrite (real_indicator_false ((a <= z)%R /\ (z < c)%R)) by lra.
+          rewrite (real_indicator_true (c <= z)%R) by lra; ring.
+    - apply lap_masked_integrable; [exact Hb | apply real_measurable_between].
+    - apply lap_masked_integrable; [exact Hb | apply real_measurable_above]. }
+  lra.
 Qed.
 
-Lemma ntm_indicator_left_exit :
-  forall (a c z : R) (v : state),
-    (a <= c)%R ->
-    real_indicator
-      (satisfies (update_real v ntm_x z)
-         <{ $(ntm_below a) /\ (~ $(ntm_inside a c)) }>) =
-    real_indicator (z < a)%R.
+(** Every lower tail has positive mass: on [c-1, c) the density is bounded
+    below by a positive constant. *)
+Lemma ntm_lap_below_pos :
+  forall mu bb c : R, (0 < bb)%R -> (0 < lap_below mu bb c)%R.
 Proof.
-  intros a c z v Hac.
-  rewrite (real_indicator_extensional _ _ (ntm_sat_left_exit a c z v Hac)).
-  reflexivity.
+  intros mu bb c Hb.
+  set (K := ((1 / (2 * bb)) * exp (- (Rabs (c - mu) + 1) / bb))%R).
+  assert (HK : (0 < K)%R).
+  { unfold K; apply Rmult_lt_0_compat; [apply Rdiv_lt_0_compat; lra | apply exp_pos]. }
+  apply Rlt_le_trans with (K * real_integral_between (c - 1) c (fun _ => 1))%R.
+  { rewrite real_integral_between_one by lra.
+    replace (c - (c - 1))%R with 1%R by ring; lra. }
+  unfold real_integral_between.
+  rewrite <- real_integral_scale by apply real_integrable_between_one.
+  unfold lap_below; apply real_integral_le.
+  - apply real_integrable_scale, real_integrable_between_one.
+  - apply lap_masked_integrable; [exact Hb | apply real_measurable_below].
+  - intro z; unfold real_indicator.
+    destruct (boolp.pselect ((c - 1 <= z)%R /\ (z < c)%R)) as [Hin | Hout];
+      destruct (boolp.pselect (z < c)%R) as [Hz | Hz].
+    + rewrite !Rmult_1_r; unfold K, lap_density.
+      apply Rmult_le_compat_l; [left; apply Rdiv_lt_0_compat; lra |].
+      apply exp_le_mono.
+      unfold Rdiv; apply Rmult_le_compat_r; [left; apply Rinv_0_lt_compat; lra |].
+      apply Ropp_le_contravar.
+      replace (z - mu)%R with ((c - mu) + (z - c))%R by ring.
+      eapply Rle_trans; [apply Rabs_triang |].
+      rewrite (Rabs_left1 (z - c)) by lra; lra.
+    + lra.
+    + pose proof (lap_density_pos mu bb Hb z); lra.
+    + lra.
 Qed.
 
-Lemma ntm_indicator_right_exit :
-  forall (a c z : R) (v : state),
-    (a <= c)%R ->
-    real_indicator
-      (satisfies (update_real v ntm_x z)
-         <{ (~ $(ntm_below a)) /\ (~ $(ntm_inside a c)) }>) =
-    (1 - real_indicator (z < c)%R)%R.
-Proof.
-  intros a c z v Hac.
-  rewrite (real_indicator_extensional _ _ (ntm_sat_right_exit a c z v Hac)).
-  destruct (Rlt_dec z c) as [Hz | Hz].
-  - rewrite (real_indicator_false (c <= z)%R) by lra.
-    rewrite (real_indicator_true (z < c)%R Hz).
-    ring.
-  - rewrite (real_indicator_true (c <= z)%R) by lra.
-    rewrite (real_indicator_false (z < c)%R) by lra.
-    ring.
-Qed.
-
-(** * Bounds on the Laplace CDF
-
-    Full support, so every cutoff has strictly positive mass on both
-    sides -- which is what makes both exit events reachable. *)
-
-Lemma ntm_exp_le_1 : forall x : R, (x <= 0)%R -> (exp x <= 1)%R.
-Proof.
-  intros x Hx.
-  replace 1%R with (exp 0) by apply exp_0.
-  apply exp_le_compat; exact Hx.
-Qed.
-
-Lemma ntm_exp_lt_1 : forall x : R, (x < 0)%R -> (exp x < 1)%R.
-Proof.
-  intros x Hx.
-  replace 1%R with (exp 0) by apply exp_0.
-  apply exp_increasing; exact Hx.
-Qed.
-
-Lemma laplace_cdf_pos :
-  forall loc s u : R, (0 < s)%R -> (0 < laplace_cdf loc s u)%R.
-Proof.
-  intros loc s u Hs.
-  unfold laplace_cdf.
-  destruct (Rle_dec u loc) as [H | H].
-  - pose proof (exp_pos ((u - loc) / s)); lra.
-  - assert (Hlt : (exp (- (u - loc) / s) < 1)%R).
-    { apply ntm_exp_lt_1.
-      replace 0%R with (0 / s)%R by (field; lra).
-      unfold Rdiv; apply Rmult_lt_compat_r;
-        [apply Rinv_0_lt_compat; lra | lra]. }
-    lra.
-Qed.
-
-Lemma laplace_cdf_lt_1 :
-  forall loc s u : R, (0 < s)%R -> (laplace_cdf loc s u < 1)%R.
-Proof.
-  intros loc s u Hs.
-  unfold laplace_cdf.
-  destruct (Rle_dec u loc) as [H | H].
-  - assert (Hle : (exp ((u - loc) / s) <= 1)%R).
-    { apply ntm_exp_le_1.
-      replace 0%R with (0 / s)%R by (field; lra).
-      unfold Rdiv; apply Rmult_le_compat_r;
-        [apply Rlt_le, Rinv_0_lt_compat; lra | lra]. }
-    lra.
-  - pose proof (exp_pos (- (u - loc) / s)); lra.
-Qed.
-
-(** * The three integrals *)
+(** * The three integrals produced by the sample *)
 
 Lemma ntm_integral_inside :
   forall (mu bb a c : R) (v : state),
@@ -318,22 +256,12 @@ Lemma ntm_integral_inside :
     q_eval
       [[ integral ntm_x ~ $(ntm_noise mu bb),
          indicator[$(ntm_inside a c)] ]] v =
-    (ntm_F mu bb c - ntm_F mu bb a)%R.
+    (1 - lap_below mu bb a - lap_above mu bb c)%R.
 Proof.
   intros mu bb a c v Hb Hac.
-  cbn [q_eval ntm_noise distribution_density term_eval].
-  transitivity
-    ((real_integral
-        (fun z => ((1 / (2 * bb)) * exp (- Rabs (z - mu) / bb)) *
-                  real_indicator (z < c)%R) -
-      real_integral
-        (fun z => ((1 / (2 * bb)) * exp (- Rabs (z - mu) / bb)) *
-                  real_indicator (z < a)%R))%R).
-  - rewrite <- ntm_real_integral_minus.
-    apply real_integral_extensional; intro z.
-    rewrite (ntm_indicator_inside a c z v Hac); ring.
-  - rewrite !laplace_integral_strict_cdf by exact Hb.
-    unfold ntm_F; ring.
+  rewrite <- (ntm_lap_split mu bb a c Hb Hac).
+  apply q_eval_laplace_indicator; [exact Hb |].
+  intro r; apply ntm_sat_inside.
 Qed.
 
 Lemma ntm_integral_left :
@@ -342,18 +270,11 @@ Lemma ntm_integral_left :
     q_eval
       [[ integral ntm_x ~ $(ntm_noise mu bb),
          indicator[$(ntm_below a) /\ (~ $(ntm_inside a c))] ]] v =
-    ntm_F mu bb a.
+    lap_below mu bb a.
 Proof.
   intros mu bb a c v Hb Hac.
-  cbn [q_eval ntm_noise distribution_density term_eval].
-  transitivity
-    (real_integral
-       (fun z => ((1 / (2 * bb)) * exp (- Rabs (z - mu) / bb)) *
-                 real_indicator (z < a)%R)).
-  - apply real_integral_extensional; intro z.
-    rewrite (ntm_indicator_left_exit a c z v Hac); reflexivity.
-  - rewrite laplace_integral_strict_cdf by exact Hb.
-    unfold ntm_F; reflexivity.
+  apply q_eval_laplace_indicator; [exact Hb |].
+  intro r; apply ntm_sat_left_exit; exact Hac.
 Qed.
 
 Lemma ntm_integral_right :
@@ -362,115 +283,98 @@ Lemma ntm_integral_right :
     q_eval
       [[ integral ntm_x ~ $(ntm_noise mu bb),
          indicator[(~ $(ntm_below a)) /\ (~ $(ntm_inside a c))] ]] v =
-    (1 - ntm_F mu bb c)%R.
+    lap_above mu bb c.
 Proof.
   intros mu bb a c v Hb Hac.
-  cbn [q_eval ntm_noise distribution_density term_eval].
-  transitivity
-    ((real_integral
-        (fun z => (1 / (2 * bb)) * exp (- Rabs (z - mu) / bb)) -
-      real_integral
-        (fun z => ((1 / (2 * bb)) * exp (- Rabs (z - mu) / bb)) *
-                  real_indicator (z < c)%R))%R).
-  - rewrite <- ntm_real_integral_minus.
-    apply real_integral_extensional; intro z.
-    rewrite (ntm_indicator_right_exit a c z v Hac); ring.
-  - rewrite laplace_density_total by exact Hb.
-    rewrite laplace_integral_strict_cdf by exact Hb.
-    unfold ntm_F; reflexivity.
+  apply q_eval_laplace_indicator; [exact Hb |].
+  intro r; apply ntm_sat_right_exit; exact Hac.
 Qed.
 
-(** * Certificate data *)
+(** * Certificate data
+
+    One region: the guard itself.  The exit masses [pL] (left) and [pR]
+    (right) are parameters; the mass that stays in the band is
+    [1 - pL - pR]. *)
 
 Definition ntm_regions (_ : nat) : CFormula := ntm_guard.
 
-Definition ntm_transitions (mu bb a c : R) (_ _ : nat) : R :=
-  (ntm_F mu bb c - ntm_F mu bb a)%R.
+Definition ntm_transitions (pL pR : R) (_ _ : nat) : R := (1 - pL - pR)%R.
 
-Definition ntm_denom (mu bb a c : R) : R :=
-  (ntm_F mu bb a + (1 - ntm_F mu bb c))%R.
+Definition ntm_exit (p : R) (_ : nat) : R := p.
 
-Definition ntm_exit_left (mu bb a : R) (_ : nat) : R := ntm_F mu bb a.
-
-Definition ntm_exit_right (mu bb c : R) (_ : nat) : R :=
-  (1 - ntm_F mu bb c)%R.
-
-Definition ntm_sol_left (mu bb a c : R) (_ : nat) : R :=
-  (ntm_F mu bb a / ntm_denom mu bb a c)%R.
-
-Definition ntm_sol_right (mu bb a c : R) (_ : nat) : R :=
-  ((1 - ntm_F mu bb c) / ntm_denom mu bb a c)%R.
+Definition ntm_sol (p pL pR : R) (_ : nat) : R := (p / (pL + pR))%R.
 
 Definition ntm_q_left : PConstruct := [[ indicator[ntm_left] ]].
 Definition ntm_q_right : PConstruct := [[ indicator[~ ntm_left] ]].
 
-(** Boolean substitution is the identity on the arithmetic formulas. *)
-Lemma ntm_subst_inside :
-  forall (b : BoolProgramVar) (beta : CFormula) (a c : R),
-    subst_bool_cformula b beta (ntm_inside a c) = ntm_inside a c.
+Lemma ntm_reported_left_eq :
+  condition_pconstruct ntm_q_left (c_not ntm_guard) = ntm_reported_left.
 Proof. reflexivity. Qed.
 
-Lemma ntm_subst_below :
-  forall (b : BoolProgramVar) (beta : CFormula) (u : R),
-    subst_bool_cformula b beta (ntm_below u) = ntm_below u.
+Lemma ntm_reported_right_eq :
+  condition_pconstruct ntm_q_right (c_not ntm_guard) = ntm_reported_right.
 Proof. reflexivity. Qed.
 
-(** * The body premise, once per exit event *)
+(** * The body premise, for either exit event
 
-Lemma ntm_body_left :
-  forall mu bb a c : R,
+    [q] selects the exit event and [p] is its post-sample expectation. *)
+
+Lemma ntm_body_step :
+  forall (mu bb a c pL pR p : R) (q : PConstruct),
     (0 < bb)%R -> (a <= c)%R ->
+    lap_below mu bb a = pL ->
+    lap_above mu bb c = pR ->
+    (forall ps : Pstate,
+       expectation (pstate_measure ps) (q_eval (QIndicator c_true)) = 1%R ->
+       pterm_eval
+         (sample_pterm ntm_x (ntm_noise mu bb)
+            (subst_bool_pterm ntm_left (ntm_below a)
+               (subst_bool_pterm ntm_active (ntm_inside a c)
+                  (PExpect (condition_pconstruct q (c_not ntm_guard)))))) ps = p) ->
     forall i : nat,
       (i < 1)%nat ->
       {{ $(p_concentrated_mass (ntm_regions i) (PConst 1)) }}
         $(ntm_body mu bb a c)
-      {{ $(while_body_post 1 ntm_regions (ntm_transitions mu bb a c i)
-             ntm_guard ntm_q_left (ntm_exit_left mu bb a i)) }}.
+      {{ $(while_body_post 1 ntm_regions (ntm_transitions pL pR i)
+             ntm_guard q (ntm_exit p i)) }}.
 Proof.
-  intros mu bb a c Hb Hac i Hi.
+  intros mu bb a c pL pR p q Hb Hac HL HR Hexit i Hi.
   unfold ntm_body.
   eapply HSeq with
     (eta2 :=
        subst_bool_pformula ntm_left (ntm_below a)
          (subst_bool_pformula ntm_active (ntm_inside a c)
-            (while_body_post 1 ntm_regions (ntm_transitions mu bb a c i)
-               ntm_guard ntm_q_left (ntm_exit_left mu bb a i)))).
+            (while_body_post 1 ntm_regions (ntm_transitions pL pR i)
+               ntm_guard q (ntm_exit p i)))).
   - apply HRealSample.
-    + intro ps.
-    + intro Hadm.
+    + intros ps Hadm.
       cbn [psatisfies].
       intro Hpre.
       apply psatisfies_p_and in Hpre.
       destruct Hpre as [_ Hmass].
       apply psatisfies_p_eq in Hmass.
       cbn [pterm_eval] in Hmass.
-      unfold while_body_post, ntm_q_left, ntm_regions, ntm_guard,
-        ntm_transitions, ntm_exit_left.
-      cbn [finite_p_and condition_pconstruct condition_pconstruct_fuel
-           pconstruct_size].
+      unfold while_body_post, ntm_regions, ntm_transitions, ntm_exit.
+      cbn [finite_p_and].
       rewrite !subst_bool_pformula_p_and, !subst_bool_pformula_p_eq.
       rewrite !sample_pformula_p_and, !sample_pformula_p_eq.
       apply psatisfies_p_and; split; [apply psatisfies_p_and; split | ].
       * apply psatisfies_p_true.
       * apply psatisfies_p_eq.
-        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula].
-        rewrite !bpv_eq_dec_refl; try rewrite !ntm_subst_inside.
+        unfold ntm_guard.
+        cbn [condition_pconstruct condition_pconstruct_fuel pconstruct_size
+             subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
+             subst_bool_cformula].
+        rewrite !bpv_eq_dec_refl.
         cbn [sample_pterm pterm_eval].
-        rewrite (t3_expect_const ps _
-                   (ntm_F mu bb c - ntm_F mu bb a)%R Hmass);
-          [reflexivity | intro v; apply ntm_integral_inside; assumption].
+        rewrite (t3_expect_const ps _ (1 - pL - pR)%R Hmass);
+          [reflexivity |].
+        intro v; rewrite <- HL, <- HR; apply ntm_integral_inside; assumption.
       * apply psatisfies_p_eq.
-        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula
-             c_and c_not].
-        rewrite !bpv_eq_dec_refl;
-        try rewrite !ntm_subst_inside;
-        try rewrite !ntm_subst_below.
-        cbn [sample_pterm pterm_eval].
-        rewrite (t3_expect_const ps _ (ntm_F mu bb a) Hmass);
-          [reflexivity | intro v; apply ntm_integral_left; assumption].
-    + intros ps _.
-      revert ps.
-      apply p_almost_sure_of_pointwise.
+        cbn [pterm_eval].
+        rewrite (Hexit ps Hmass); reflexivity.
+    + intros ps Hadm _.
+      refine (p_almost_sure_of_pointwise _ _ ps Hadm).
       intro v.
       unfold ntm_noise.
       cbn [distribution_valid_formula c_lt c_not satisfies term_eval].
@@ -478,177 +382,105 @@ Proof.
   - eapply HSeq with
       (eta2 :=
          subst_bool_pformula ntm_active (ntm_inside a c)
-           (while_body_post 1 ntm_regions (ntm_transitions mu bb a c i)
-              ntm_guard ntm_q_left (ntm_exit_left mu bb a i)));
+           (while_body_post 1 ntm_regions (ntm_transitions pL pR i)
+              ntm_guard q (ntm_exit p i)));
       apply HBoolAssign.
+Qed.
+
+Lemma ntm_body_left :
+  forall mu bb a c pL pR : R,
+    (0 < bb)%R -> (a <= c)%R ->
+    lap_below mu bb a = pL ->
+    lap_above mu bb c = pR ->
+    forall i : nat,
+      (i < 1)%nat ->
+      {{ $(p_concentrated_mass (ntm_regions i) (PConst 1)) }}
+        $(ntm_body mu bb a c)
+      {{ $(while_body_post 1 ntm_regions (ntm_transitions pL pR i)
+             ntm_guard ntm_q_left (ntm_exit pL i)) }}.
+Proof.
+  intros mu bb a c pL pR Hb Hac HL HR.
+  apply ntm_body_step with (pL := pL); try assumption.
+  intros ps Hmass.
+  unfold ntm_q_left, ntm_guard.
+  cbn [condition_pconstruct condition_pconstruct_fuel pconstruct_size
+       subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
+       subst_bool_cformula c_and c_not].
+  rewrite !bpv_eq_dec_refl.
+  cbn [sample_pterm pterm_eval].
+  rewrite (t3_expect_const ps _ pL Hmass); [reflexivity |].
+  intro v; rewrite <- HL; apply ntm_integral_left; assumption.
 Qed.
 
 Lemma ntm_body_right :
-  forall mu bb a c : R,
+  forall mu bb a c pL pR : R,
     (0 < bb)%R -> (a <= c)%R ->
+    lap_below mu bb a = pL ->
+    lap_above mu bb c = pR ->
     forall i : nat,
       (i < 1)%nat ->
       {{ $(p_concentrated_mass (ntm_regions i) (PConst 1)) }}
         $(ntm_body mu bb a c)
-      {{ $(while_body_post 1 ntm_regions (ntm_transitions mu bb a c i)
-             ntm_guard ntm_q_right (ntm_exit_right mu bb c i)) }}.
+      {{ $(while_body_post 1 ntm_regions (ntm_transitions pL pR i)
+             ntm_guard ntm_q_right (ntm_exit pR i)) }}.
 Proof.
-  intros mu bb a c Hb Hac i Hi.
-  unfold ntm_body.
-  eapply HSeq with
-    (eta2 :=
-       subst_bool_pformula ntm_left (ntm_below a)
-         (subst_bool_pformula ntm_active (ntm_inside a c)
-            (while_body_post 1 ntm_regions (ntm_transitions mu bb a c i)
-               ntm_guard ntm_q_right (ntm_exit_right mu bb c i)))).
-  - apply HRealSample.
-    + intro ps.
-    + intro Hadm.
-      cbn [psatisfies].
-      intro Hpre.
-      apply psatisfies_p_and in Hpre.
-      destruct Hpre as [_ Hmass].
-      apply psatisfies_p_eq in Hmass.
-      cbn [pterm_eval] in Hmass.
-      unfold while_body_post, ntm_q_right, ntm_regions, ntm_guard,
-        ntm_transitions, ntm_exit_right.
-      cbn [finite_p_and condition_pconstruct condition_pconstruct_fuel
-           pconstruct_size].
-      rewrite !subst_bool_pformula_p_and, !subst_bool_pformula_p_eq.
-      rewrite !sample_pformula_p_and, !sample_pformula_p_eq.
-      apply psatisfies_p_and; split; [apply psatisfies_p_and; split | ].
-      * apply psatisfies_p_true.
-      * apply psatisfies_p_eq.
-        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula].
-        rewrite !bpv_eq_dec_refl; try rewrite !ntm_subst_inside.
-        cbn [sample_pterm pterm_eval].
-        rewrite (t3_expect_const ps _
-                   (ntm_F mu bb c - ntm_F mu bb a)%R Hmass);
-          [reflexivity | intro v; apply ntm_integral_inside; assumption].
-      * apply psatisfies_p_eq.
-        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula
-             c_and c_not].
-        rewrite !bpv_eq_dec_refl;
-        try rewrite !ntm_subst_inside;
-        try rewrite !ntm_subst_below.
-        cbn [sample_pterm pterm_eval].
-        rewrite (t3_expect_const ps _ (1 - ntm_F mu bb c)%R Hmass);
-          [reflexivity | intro v; apply ntm_integral_right; assumption].
-    + intros ps _.
-      revert ps.
-      apply p_almost_sure_of_pointwise.
-      intro v.
-      unfold ntm_noise.
-      cbn [distribution_valid_formula c_lt c_not satisfies term_eval].
-      intro Hle; lra.
-  - eapply HSeq with
-      (eta2 :=
-         subst_bool_pformula ntm_active (ntm_inside a c)
-           (while_body_post 1 ntm_regions (ntm_transitions mu bb a c i)
-              ntm_guard ntm_q_right (ntm_exit_right mu bb c i)));
-      apply HBoolAssign.
+  intros mu bb a c pL pR Hb Hac HL HR.
+  apply ntm_body_step with (pL := pL); try assumption.
+  intros ps Hmass.
+  unfold ntm_q_right, ntm_guard.
+  cbn [condition_pconstruct condition_pconstruct_fuel pconstruct_size
+       subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
+       subst_bool_cformula c_and c_not].
+  rewrite !bpv_eq_dec_refl.
+  cbn [sample_pterm pterm_eval].
+  rewrite (t3_expect_const ps _ pR Hmass); [reflexivity |].
+  intro v; rewrite <- HR; apply ntm_integral_right; assumption.
 Qed.
 
-(** * The loops *)
+(** * The loop, for either exit event *)
 
-Lemma ntm_loop_left :
-  forall mu bb a c : R,
-    (0 < bb)%R -> (a <= c)%R ->
+Lemma ntm_loop_derivable :
+  forall (mu bb a c pL pR p : R) (q : PConstruct),
+    (0 < pL)%R -> (0 < pR)%R -> (0 < p)%R -> (p <= pL + pR)%R ->
+    (forall i : nat,
+       (i < 1)%nat ->
+       {{ $(p_concentrated_mass (ntm_regions i) (PConst 1)) }}
+         $(ntm_body mu bb a c)
+       {{ $(while_body_post 1 ntm_regions (ntm_transitions pL pR i)
+              ntm_guard q (ntm_exit p i)) }}) ->
     {{ $(p_concentrated_mass (ntm_regions 0) (PVar ntm_y)) }}
       $(ntm_loop mu bb a c)
-    {{ E[$(condition_pconstruct ntm_q_left (c_not ntm_guard))]
-         = $(ntm_sol_left mu bb a c 0) * ntm_y }}.
+    {{ E[$(condition_pconstruct q (c_not ntm_guard))]
+         = $(ntm_sol p pL pR 0) * ntm_y }}.
 Proof.
-  intros mu bb a c Hb Hac.
-  pose proof (laplace_cdf_pos mu bb a Hb) as HFa.
-  pose proof (laplace_cdf_lt_1 mu bb c Hb) as HFc.
-  assert (HD : (0 < ntm_denom mu bb a c)%R).
-  { unfold ntm_denom, ntm_F; lra. }
+  intros mu bb a c pL pR p q HpL HpR Hp Hle Hbody.
   eapply HWhile with
     (m := 1%nat) (k := 0%nat)
-    (regions := ntm_regions) (solution := ntm_sol_left mu bb a c)
-    (exits := ntm_exit_left mu bb a)
-    (transitions := ntm_transitions mu bb a c).
+    (regions := ntm_regions) (solution := ntm_sol p pL pR)
+    (exits := ntm_exit p) (transitions := ntm_transitions pL pR).
   - lia.
   - unfold while_regions_cover, cformula_valid, ntm_regions.
     intro v; cbn [finite_c_or c_or c_not satisfies]; tauto.
   - unfold while_regions_in_guard, cformula_valid, ntm_regions.
     intros i Hi v; cbn [satisfies]; tauto.
   - unfold while_regions_disjoint; intros i j Hi Hj; lia.
-  - unfold while_progress, ntm_exit_left, ntm_F.
-    intros i Hi; left; lra.
-  - apply ntm_body_left; assumption.
-  - unfold while_solution, ntm_sol_left, ntm_transitions, ntm_exit_left,
-      ntm_denom, ntm_F.
+  - unfold while_progress, ntm_exit.
+    intros i Hi; left; exact Hp.
+  - exact Hbody.
+  - unfold while_solution, ntm_sol, ntm_transitions, ntm_exit.
     intros i Hi.
     cbn [finite_r_sum].
-    unfold ntm_denom, ntm_F in HD.
-    assert (Hval :
-      (laplace_cdf mu bb a /
-       (laplace_cdf mu bb a + (1 - laplace_cdf mu bb c)) *
-       (laplace_cdf mu bb a + (1 - laplace_cdf mu bb c)))%R =
-      laplace_cdf mu bb a) by (field; lra).
     split.
     + field; lra.
     + split.
-      * apply Rmult_le_reg_r
-          with (r := (laplace_cdf mu bb a + (1 - laplace_cdf mu bb c))%R);
-          [lra |].
-        rewrite Hval; lra.
-      * apply Rmult_le_reg_r
-          with (r := (laplace_cdf mu bb a + (1 - laplace_cdf mu bb c))%R);
-          [lra |].
-        rewrite Hval; lra.
+      * unfold Rdiv; apply Rmult_le_pos; [lra |].
+        left; apply Rinv_0_lt_compat; lra.
+      * apply Rmult_le_reg_r with (r := (pL + pR)%R); [lra |].
+        replace (p / (pL + pR) * (pL + pR))%R with p by (field; lra).
+        lra.
 Qed.
 
-Lemma ntm_loop_right :
-  forall mu bb a c : R,
-    (0 < bb)%R -> (a <= c)%R ->
-    {{ $(p_concentrated_mass (ntm_regions 0) (PVar ntm_y)) }}
-      $(ntm_loop mu bb a c)
-    {{ E[$(condition_pconstruct ntm_q_right (c_not ntm_guard))]
-         = $(ntm_sol_right mu bb a c 0) * ntm_y }}.
-Proof.
-  intros mu bb a c Hb Hac.
-  pose proof (laplace_cdf_pos mu bb a Hb) as HFa.
-  pose proof (laplace_cdf_lt_1 mu bb c Hb) as HFc.
-  eapply HWhile with
-    (m := 1%nat) (k := 0%nat)
-    (regions := ntm_regions) (solution := ntm_sol_right mu bb a c)
-    (exits := ntm_exit_right mu bb c)
-    (transitions := ntm_transitions mu bb a c).
-  - lia.
-  - unfold while_regions_cover, cformula_valid, ntm_regions.
-    intro v; cbn [finite_c_or c_or c_not satisfies]; tauto.
-  - unfold while_regions_in_guard, cformula_valid, ntm_regions.
-    intros i Hi v; cbn [satisfies]; tauto.
-  - unfold while_regions_disjoint; intros i j Hi Hj; lia.
-  - unfold while_progress, ntm_exit_right, ntm_F.
-    intros i Hi; left; lra.
-  - apply ntm_body_right; assumption.
-  - unfold while_solution, ntm_sol_right, ntm_transitions, ntm_exit_right,
-      ntm_denom, ntm_F.
-    intros i Hi.
-    cbn [finite_r_sum].
-    assert (Hval :
-      ((1 - laplace_cdf mu bb c) /
-       (laplace_cdf mu bb a + (1 - laplace_cdf mu bb c)) *
-       (laplace_cdf mu bb a + (1 - laplace_cdf mu bb c)))%R =
-      (1 - laplace_cdf mu bb c)%R) by (field; lra).
-    split.
-    + field; lra.
-    + split.
-      * apply Rmult_le_reg_r
-          with (r := (laplace_cdf mu bb a + (1 - laplace_cdf mu bb c))%R);
-          [lra |].
-        rewrite Hval; lra.
-      * apply Rmult_le_reg_r
-          with (r := (laplace_cdf mu bb a + (1 - laplace_cdf mu bb c))%R);
-          [lra |].
-        rewrite Hval; lra.
-Qed.
-
-(** * The monitor
+(** * The monitor, for given exit masses
 
     The prefix concentrates all mass on the single region, so the loop is
     enterable. *)
@@ -676,8 +508,7 @@ Proof.
       (eta2 :=
          subst_bool_pformula ntm_active c_true
            (p_concentrated_mass (ntm_regions 0) (PVar ntm_y))).
-    + intro ps.
-    + intro Hadm.
+    + intros ps Hadm.
       cbn [psatisfies].
       intro Hpre.
       apply psatisfies_p_eq in Hpre.
@@ -685,60 +516,163 @@ Proof.
       unfold p_concentrated_mass, ntm_regions, ntm_guard.
       rewrite !subst_bool_pformula_p_and, !subst_bool_pformula_p_eq.
       apply psatisfies_p_and; split; apply psatisfies_p_eq;
-        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula
-             pterm_eval].
-      * rewrite !bpv_eq_dec_refl; reflexivity.
+        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
+             pconstruct_size subst_bool_cformula pterm_eval].
+      * rewrite !bpv_eq_dec_refl.
+        destruct (bool_program_var_eq_dec ntm_active ntm_left) as [Heq | _];
+          [discriminate Heq | reflexivity].
       * exact Hpre.
     + apply HBoolAssign.
-    + intro ps; cbn [psatisfies]; tauto.
+    + intros ps Hadm; cbn [psatisfies]; tauto.
   - eapply HSeq with
       (eta2 := p_concentrated_mass (ntm_regions 0) (PVar ntm_y)).
     + apply HBoolAssign.
     + exact Hloop.
 Qed.
 
-(** The monitor reports LEFT with probability [F a / (F a + 1 - F c)]. *)
-Theorem ntm_left_probability :
-  forall mu bb a c : R,
+Lemma ntm_left_rate :
+  forall mu bb a c pL pR : R,
     (0 < bb)%R -> (a <= c)%R ->
+    lap_below mu bb a = pL ->
+    lap_above mu bb c = pR ->
     {{ Pr[true] = ntm_y }}
       $(ntm_prog mu bb a c)
-    {{ E[$(condition_pconstruct ntm_q_left (c_not ntm_guard))]
-         = $(ntm_F mu bb a /
-             (ntm_F mu bb a + (1 - ntm_F mu bb c))) * ntm_y }}.
+    {{ E[$(ntm_reported_left)] = $(pL / (pL + pR)) * ntm_y }}.
 Proof.
-  intros mu bb a c Hb Hac.
+  intros mu bb a c pL pR Hb Hac HL HR.
+  rewrite <- ntm_reported_left_eq.
   apply ntm_prefix.
-  apply ntm_loop_left; assumption.
+  pose proof (ntm_lap_below_pos mu bb a Hb) as HpL.
+  pose proof (lap_above_pos mu bb Hb c) as HpR.
+  apply (ntm_loop_derivable mu bb a c pL pR pL); try lra.
+  apply ntm_body_left; assumption.
 Qed.
 
-(** ... and RIGHT with probability [(1 - F c) / (F a + 1 - F c)].  Same
-    certificate, same loop equation -- only [q] and the exit mass differ. *)
-Theorem ntm_right_probability :
-  forall mu bb a c : R,
+Lemma ntm_right_rate :
+  forall mu bb a c pL pR : R,
     (0 < bb)%R -> (a <= c)%R ->
+    lap_below mu bb a = pL ->
+    lap_above mu bb c = pR ->
     {{ Pr[true] = ntm_y }}
       $(ntm_prog mu bb a c)
-    {{ E[$(condition_pconstruct ntm_q_right (c_not ntm_guard))]
-         = $((1 - ntm_F mu bb c) /
-             (ntm_F mu bb a + (1 - ntm_F mu bb c))) * ntm_y }}.
+    {{ E[$(ntm_reported_right)] = $(pR / (pL + pR)) * ntm_y }}.
 Proof.
-  intros mu bb a c Hb Hac.
+  intros mu bb a c pL pR Hb Hac HL HR.
+  rewrite <- ntm_reported_right_eq.
   apply ntm_prefix.
-  apply ntm_loop_right; assumption.
+  pose proof (ntm_lap_below_pos mu bb a Hb) as HpL.
+  pose proof (lap_above_pos mu bb Hb c) as HpR.
+  apply (ntm_loop_derivable mu bb a c pL pR pR); try lra.
+  apply ntm_body_right; assumption.
+Qed.
+
+(** * The Laplace CDF, as a state-logic formula *)
+
+Definition ntm_cdf (mu bb u F : R) : PFormula :=
+  [[ Pr[true] = 1 ->
+     E[ integral ntm_z ~ laplace ( $(mu), $(bb) ), indicator[ntm_z <= $(u)] ] = $(F) ]].
+
+(** Evaluating a rate formula at a point mass pins the parameter down. *)
+Lemma ntm_rate_point :
+  forall (gamma : CFormula) (mu bb p : R) (P : R -> Prop),
+    (0 < bb)%R ->
+    (forall r, satisfies (update_real demo_valuation ntm_z r) gamma <-> P r) ->
+    pformula_valid
+      (PFImpl (p_eq (PExpect (QIndicator c_true)) (PConst 1))
+         (p_eq (PExpect (QIntegral ntm_z (Laplace (TConst mu) (TConst bb))
+                          (QIndicator gamma)))
+               (PConst p))) ->
+    real_integral (fun r => lap_density mu bb r * real_indicator (P r)) = p.
+Proof.
+  intros gamma mu bb p P Hb HP Hvalid.
+  set (ps0 := point_pstate demo_valuation).
+  pose proof (Hvalid ps0 (point_admissible demo_valuation)) as H.
+  cbn [psatisfies] in H.
+  assert (Hone : psatisfies ps0 (p_eq (PExpect (QIndicator c_true)) (PConst 1))).
+  { apply psatisfies_p_eq; cbn [pterm_eval]; unfold ps0.
+    rewrite point_pstate_expect, q_eval_indicatorE.
+    apply real_indicator_true; cbn [c_true satisfies]; tauto. }
+  specialize (H Hone).
+  apply psatisfies_p_eq in H; cbn [pterm_eval] in H.
+  unfold ps0 in H.
+  rewrite point_pstate_expect in H.
+  rewrite <- H; symmetry.
+  apply q_eval_laplace_indicator; assumption.
+Qed.
+
+Lemma ntm_cdf_value :
+  forall mu bb u F : R,
+    (0 < bb)%R ->
+    pformula_valid (ntm_cdf mu bb u F) ->
+    lap_below mu bb u = F.
+Proof.
+  intros mu bb u F Hb Hvalid.
+  rewrite <- (lap_atmost_below mu bb Hb u).
+  exact (ntm_rate_point (FLe (TProgVar ntm_z) (TConst u)) mu bb F (fun r => (r <= u)%R) Hb
+           (fun r => ltac:(cbn [satisfies]; rewrite update_real_same; reflexivity)) Hvalid).
+Qed.
+
+(** The right exit mass is the complement of the CDF at [c]. *)
+Lemma ntm_cdf_above :
+  forall mu bb c Fc : R,
+    (0 < bb)%R ->
+    pformula_valid (ntm_cdf mu bb c Fc) ->
+    lap_above mu bb c = (1 - Fc)%R.
+Proof.
+  intros mu bb c Fc Hb Hvalid.
+  pose proof (ntm_cdf_value mu bb c Fc Hb Hvalid) as H.
+  pose proof (lap_below_above mu bb Hb c) as Hs.
+  lra.
+Qed.
+
+(** * The headline triples
+
+    One certificate, one loop equation [s = (1 - pL - pR) * s + p]; only
+    [q] and the exit mass [p] differ between the two sides. *)
+
+Theorem ntm_left_probability :
+  forall mu bb a c Fa Fc : R,
+    (0 < bb)%R -> (a <= c)%R ->
+    pformula_valid (ntm_cdf mu bb a Fa) ->
+    pformula_valid (ntm_cdf mu bb c Fc) ->
+    {{ Pr[true] = ntm_y }}
+      $(ntm_prog mu bb a c)
+    {{ E[$(ntm_reported_left)] = $(Fa / (Fa + (1 - Fc))) * ntm_y }}.
+Proof.
+  intros mu bb a c Fa Fc Hb Hac HA HC.
+  apply ntm_left_rate; try assumption.
+  - apply ntm_cdf_value; assumption.
+  - apply ntm_cdf_above; assumption.
+Qed.
+
+Theorem ntm_right_probability :
+  forall mu bb a c Fa Fc : R,
+    (0 < bb)%R -> (a <= c)%R ->
+    pformula_valid (ntm_cdf mu bb a Fa) ->
+    pformula_valid (ntm_cdf mu bb c Fc) ->
+    {{ Pr[true] = ntm_y }}
+      $(ntm_prog mu bb a c)
+    {{ E[$(ntm_reported_right)] = $((1 - Fc) / (Fa + (1 - Fc))) * ntm_y }}.
+Proof.
+  intros mu bb a c Fa Fc Hb Hac HA HC.
+  apply ntm_right_rate; try assumption.
+  - apply ntm_cdf_value; assumption.
+  - apply ntm_cdf_above; assumption.
 Qed.
 
 (** The two reported probabilities sum to 1: the monitor terminates almost
     surely and reports exactly one side. *)
 Corollary ntm_exhaustive :
-  forall mu bb a c : R,
+  forall mu bb a c Fa Fc : R,
     (0 < bb)%R ->
-    (ntm_F mu bb a / (ntm_F mu bb a + (1 - ntm_F mu bb c)) +
-     (1 - ntm_F mu bb c) / (ntm_F mu bb a + (1 - ntm_F mu bb c)))%R = 1%R.
+    pformula_valid (ntm_cdf mu bb a Fa) ->
+    pformula_valid (ntm_cdf mu bb c Fc) ->
+    (Fa / (Fa + (1 - Fc)) + (1 - Fc) / (Fa + (1 - Fc)))%R = 1%R.
 Proof.
-  intros mu bb a c Hb.
-  pose proof (laplace_cdf_pos mu bb a Hb) as HFa.
-  pose proof (laplace_cdf_lt_1 mu bb c Hb) as HFc.
-  unfold ntm_F in *.
+  intros mu bb a c Fa Fc Hb HA HC.
+  pose proof (ntm_cdf_value mu bb a Fa Hb HA) as HL.
+  pose proof (ntm_cdf_above mu bb c Fc Hb HC) as HR.
+  pose proof (ntm_lap_below_pos mu bb a Hb) as HpL.
+  pose proof (lap_above_pos mu bb Hb c) as HpR.
   field; lra.
 Qed.

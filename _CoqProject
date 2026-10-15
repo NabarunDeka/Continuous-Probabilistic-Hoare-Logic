@@ -47,6 +47,4 @@ Soundness/DensityIntegration.v
 Soundness/CalculationFacts.v
 ExponentialIntegrals.v
 AnalyticalCalculations.v
-SVT.v
 SVT_notation.v
-MonteCarloEst.v

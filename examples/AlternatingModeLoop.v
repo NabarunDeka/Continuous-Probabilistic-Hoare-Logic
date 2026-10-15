@@ -1,33 +1,18 @@
 (**
-  AlternatingModeLoop.v -- a loop whose body flips a mode bit that nothing
-  else reads.
+  AlternatingModeLoop.v
 
-      done := ff; mode := ff;
+  Program ([am_prog b]):
+
+      done := ff;
+      mode := ff;
       while ~done do
-        x    <- sample(Laplace(0, b));
+        x <- sample(laplace(0, b));
         done := (0 <= x);
         mode := ~mode
-      end
 
-  THE TRIPLE ([am_terminates], for [0 < b]):
+  Triple ([am_terminates], for 0 < b):
 
-      { E[1_tt] = y }   am_prog b   { Pr[done] = 1 * y }
-
-  ONE REGION.  Neither the guard nor the acceptance test mentions [mode], so
-  the exit probability is 1/2 whatever the mode is, and the certificate needs
-  a single region: the guard itself.  [mode] then appears in no assertion in
-  the derivation, and [mode := ~mode] costs exactly one extra [HBoolAssign] --
-  backward substitution into a mode-free assertion is the identity.
-
-  WHY NOT TWO REGIONS.  An earlier version of this file partitioned the guard
-  by [mode] and carried an off-diagonal 2x2 transition matrix.  It proved this
-  same triple, and the extra structure earned nothing: both regions solve to
-  1, so the chain lumps to the single-region one above, and the linear system
-  was never actually coupled -- [while_solution] would have accepted the
-  diagonal matrix just as happily.  A certificate that genuinely needs two
-  regions wants a different exit rate per mode, whose post-sample integrand
-  is a SUM of two scaled indicators; [expectation] has [expectation_scale]
-  but no additivity axiom, so that sum cannot be split.  See FLAGS F3.
+      { E[1_tt] = y }  am_prog b  { E[1_(tt /\ ~~done)] = 1 * y }
 *)
 
 From Stdlib Require Import Reals.
@@ -36,7 +21,7 @@ From Stdlib Require Import Lra.
 From Stdlib Require Import Lia.
 Require Import CPHL.
 Require Import SampleBeforeLoop.
-Require Import PersistentSampleLoop.
+Require Import MeasureIntegration CdfAssertions.
 Require Import HalfLaplaceRejection.
 
 Open Scope R_scope.
@@ -80,25 +65,12 @@ Definition am_exits (_ : nat) : R := 1 / 2.
 Definition am_solution (_ : nat) : R := 1.
 Definition am_q : PConstruct := [[ indicator[true] ]].
 
-(** * Satisfaction after a sample
-
-    [update_real] touches only [am_x]. *)
-
-Lemma am_sat_accept :
-  forall (z : R) (v : state),
-    satisfies (update_real v am_x z) am_accept <-> (0 <= z)%R.
-Proof.
-  intros z v.
-  unfold am_accept, update_real, update_real_values.
-  cbn [satisfies term_eval real_program_values].
-  rewrite rpv_eq_dec_refl.
-  split; intro H; exact H.
-Qed.
-
 (** * The two post-sample integrands
 
     Each is a constant: the acceptance test does not mention [mode], so
-    nothing is read from the ambient valuation. *)
+    nothing is read from the ambient valuation.  Both equal [1/2] by the
+    symmetry of the centred Laplace density ([lap_below_zero_half],
+    [lap_above_closed]). *)
 
 Definition am_psi_stay : CFormula := <{ ~ $(am_accept) }>.
 
@@ -111,26 +83,11 @@ Lemma am_qeval_psi_stay :
     (1 / 2)%R.
 Proof.
   intros b v Hb.
-  cbn [q_eval am_noise distribution_density term_eval].
-  transitivity
-    (real_integral
-       (fun z => ((1 / (2 * b)) * exp (- Rabs (z - 0) / b)) *
-                 real_indicator (z < 0)%R)).
-  - apply real_integral_extensional; intro z.
-    assert (Hiff :
-      satisfies (update_real v am_x z) am_psi_stay <-> (z < 0)%R).
-    { unfold am_psi_stay.
-      cbn [c_not satisfies].
-      split.
-      - intro Hna.
-        destruct (Rlt_dec z 0) as [Hd | Hd]; [exact Hd |].
-        exfalso; apply Hna; apply am_sat_accept; lra.
-      - intros Hz Ha; apply am_sat_accept in Ha; lra. }
-    rewrite (real_indicator_extensional _ _ Hiff).
-    reflexivity.
-  - rewrite laplace_integral_strict_cdf by exact Hb.
-    rewrite laplace_cdf_centre by exact Hb.
-    lra.
+  rewrite <- (lap_below_zero_half b Hb).
+  apply q_eval_laplace_indicator; [exact Hb |].
+  intro r; unfold am_psi_stay, am_accept, c_not.
+  cbn [satisfies]; rewrite update_real_same; cbn [term_eval].
+  split; [intro H; apply Rnot_le_lt; exact H | intros H H'; lra].
 Qed.
 
 Lemma am_qeval_psi_exit :
@@ -140,30 +97,18 @@ Lemma am_qeval_psi_exit :
     (1 / 2)%R.
 Proof.
   intros b v Hb.
-  cbn [q_eval am_noise distribution_density term_eval].
-  transitivity
-    (real_integral
-       (fun z => ((1 / (2 * b)) * exp (- Rabs (z - 0) / b)) *
-                 real_indicator (0 <= z)%R)).
-  - apply real_integral_extensional; intro z.
-    assert (Hiff :
-      satisfies (update_real v am_x z) am_psi_exit <-> (0 <= z)%R).
-    { unfold am_psi_exit.
-      rewrite satisfies_c_and.
-      cbn [c_true c_not satisfies].
-      split.
-      - intros [_ Hnn].
-        destruct (Rle_dec 0 z) as [Hd | Hd]; [exact Hd |].
-        exfalso; apply Hnn; intro Ha.
-        apply am_sat_accept in Ha; lra.
-      - intro Hz.
-        split; [tauto |].
-        intro Hna; apply Hna; apply am_sat_accept; exact Hz. }
-    rewrite (real_indicator_extensional _ _ Hiff).
-    reflexivity.
-  - rewrite laplace_integral_survival by exact Hb.
-    rewrite laplace_cdf_centre by exact Hb.
-    lra.
+  transitivity (lap_above 0 b 0).
+  - apply q_eval_laplace_indicator; [exact Hb |].
+    intro r; unfold am_psi_exit, am_accept, c_and, c_not, c_true.
+    cbn [satisfies]; rewrite update_real_same; cbn [term_eval].
+    split.
+    + intro H.
+      destruct (Rle_dec 0 r) as [Hz | Hz]; [exact Hz |].
+      exfalso; apply H; intros _ Hn; apply Hn; intro H0; exact (Hz H0).
+    + intros Hz Hf; apply (Hf (fun x => x)); intro Hn; exact (Hn Hz).
+  - rewrite lap_above_closed by (exact Hb || apply Rle_refl).
+    replace (- 0 / b)%R with 0%R by (field; lra).
+    rewrite exp_0; field.
 Qed.
 
 (** * The backward substitutions land on the two integrands
@@ -186,7 +131,8 @@ Proof. reflexivity. Qed.
 (** * The body premise
 
     Both numbers are constants, so [t3_expect_const] carries them through the
-    expectation; nothing has to be read off the region. *)
+    expectation; the substituted constructs reduce by conversion to the two
+    integrands above. *)
 
 Lemma am_body_step :
   forall b : R,
@@ -207,8 +153,7 @@ Proof.
             (while_body_post 1 am_regions (am_transitions i) am_guard am_q
                (am_exits i)))).
   - apply HRealSample.
-    + intro ps.
-    + intro Hadm.
+    + intros ps Hadm.
       cbn [psatisfies].
       intro Hconc.
       assert (Hmass :
@@ -217,26 +162,26 @@ Proof.
         destruct Hconc as [_ Hm].
         apply psatisfies_p_eq in Hm.
         cbn [pterm_eval] in Hm; exact Hm. }
-      unfold while_body_post, am_q.
-      cbn [finite_p_and condition_pconstruct condition_pconstruct_fuel
-           pconstruct_size].
+      unfold while_body_post.
+      cbn [finite_p_and].
       rewrite !subst_bool_pformula_p_and, !subst_bool_pformula_p_eq.
       rewrite !sample_pformula_p_and, !sample_pformula_p_eq.
       apply psatisfies_p_and; split; [apply psatisfies_p_and; split | ].
       * apply psatisfies_p_true.
       * apply psatisfies_p_eq.
-        cbn [subst_bool_pterm subst_bool_pconstruct sample_pterm pterm_eval].
-        rewrite am_subst_stay.
+        change (expectation (pstate_measure ps)
+                  (q_eval [[ integral am_x ~ $(am_noise b),
+                             indicator[$(am_psi_stay)] ]]) = (1 / 2)%R).
         rewrite (t3_expect_const ps _ (1 / 2)%R Hmass);
           [reflexivity | intro v; apply am_qeval_psi_stay; exact Hb].
       * apply psatisfies_p_eq.
-        cbn [subst_bool_pterm subst_bool_pconstruct sample_pterm pterm_eval].
-        rewrite am_subst_exit.
+        change (expectation (pstate_measure ps)
+                  (q_eval [[ integral am_x ~ $(am_noise b),
+                             indicator[$(am_psi_exit)] ]]) = (1 / 2)%R).
         rewrite (t3_expect_const ps _ (1 / 2)%R Hmass);
           [reflexivity | intro v; apply am_qeval_psi_exit; exact Hb].
-    + intros ps _.
-      revert ps.
-      apply p_almost_sure_of_pointwise.
+    + intros ps Hadm _.
+      refine (p_almost_sure_of_pointwise _ _ ps Hadm).
       intro v.
       unfold am_noise.
       cbn [distribution_valid_formula c_lt c_not satisfies term_eval].
@@ -258,11 +203,6 @@ Lemma am_prefix_formula_valid :
 Proof.
   intro v; vm_compute; tauto.
 Qed.
-
-Lemma am_subst_c_true :
-  forall (b : BoolProgramVar) (beta : CFormula),
-    subst_bool_cformula b beta <{ true }> = <{ true }>.
-Proof. reflexivity. Qed.
 
 (** * The loop *)
 
@@ -320,22 +260,25 @@ Proof.
       (eta2 :=
          subst_bool_pformula am_mode FFalse
            (p_concentrated_mass (am_regions 0) (PVar am_y))).
-    + intro ps.
-    + intro Hadm.
+    + intros ps Hadm.
       cbn [psatisfies].
       intro Hpre.
       apply psatisfies_p_eq in Hpre.
       cbn [pterm_eval] in Hpre.
-      unfold p_concentrated_mass, am_regions, am_guard.
+      unfold p_concentrated_mass.
       rewrite !subst_bool_pformula_p_and, !subst_bool_pformula_p_eq.
-      apply psatisfies_p_and; split; apply psatisfies_p_eq;
-        cbn [subst_bool_pterm subst_bool_pconstruct pterm_eval];
-        rewrite !am_subst_c_true.
-      * rewrite (expect_indicator_valid _ _ am_prefix_formula_valid).
-        reflexivity.
-      * exact Hpre.
+      apply psatisfies_p_and; split; apply psatisfies_p_eq.
+      * change (expectation (pstate_measure ps)
+                  (q_eval (QIndicator
+                     (subst_bool_cformula am_done <{ false }>
+                        (subst_bool_cformula am_mode <{ false }> (am_regions 0))))) =
+                expectation (pstate_measure ps) (q_eval (QIndicator c_true))).
+        apply expect_indicator_valid; exact am_prefix_formula_valid.
+      * change (expectation (pstate_measure ps) (q_eval (QIndicator c_true)) =
+                pstate_prob_logic_values ps am_y).
+        exact Hpre.
     + apply HBoolAssign.
-    + intro ps; cbn [psatisfies]; tauto.
+    + intros ps Hadm; cbn [psatisfies]; tauto.
   - eapply HSeq with
       (eta2 := p_concentrated_mass (am_regions 0) (PVar am_y)).
     + apply HBoolAssign.

@@ -1,43 +1,25 @@
 (**
-  UniformRejectionSampling.v -- the continuous analogue of the discrete
-  rejection sampler in Probabilistic-Hoare-Logic/RejectionSampling.v.
+  UniformRejectionSampling.v
 
-      retry := tt;
-      while retry do
-        x     <- sample(Uniform(0,1));
-        y     <- sample(Uniform(0,1));
-        retry := (x < 1/2  /\  y < 1/2)
+  Program ([ur_prog]):
+      ur_retry := tt;
+      while ur_retry do
+        ur_x <- sample(uniform(0, 1));
+        ur_y <- sample(uniform(0, 1));
+        ur_retry := (ur_x < 1/2 /\ ur_y < 1/2)
       end
-
-  THE TRIPLE ([ur_one_third]):
-
-      { E[1_tt] = w }
-          ur_prog
-      { Pr[x < 1/2  /\  1/2 <= y  /\  ~retry]  =  1/3 * w }
-
-  The PHL original tosses two fair coins and retries while both land true;
-  this replaces each toss with a uniform draw on the unit interval and
-  retries while both land in the lower half.  Same fixed point,
-
-      s = (1/4) * s + 1/4,   so   s = 1/3,
-
-  and the same answer: the accepted point satisfies [x < 1/2 /\ 1/2 <= y]
-  with probability exactly one third.
-
-  Two samples per iteration, so the weakest precondition carries a DOUBLY
-  nested [QIntegral].  It stays tractable because the events factor into an
-  x-part and a y-part: the inner integral collapses to a constant times an
-  indicator on the outer variable, which [real_integral_scale] pulls out.
-  No two-dimensional reasoning is needed anywhere.
+  Triple ([ur_one_third]):
+      { E[1_tt] = ur_w }
+        ur_prog
+      { E[1_((ur_x < 1/2 /\ 1/2 <= ur_y) /\ ~ur_retry)] = 1/3 * ur_w }
 *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Strings.String.
 From Stdlib Require Import Lra.
 From Stdlib Require Import Lia.
-From Stdlib Require Import ClassicalDescription.
-From Stdlib Require Import Classical.
 Require Import CPHL.
+Require Import CPHLFacts.CalculationFacts.
 Require Import SampleBeforeLoop.
 Require Import PersistentSampleLoop.
 Require Import HalfLaplaceRejection.
@@ -55,16 +37,11 @@ Lemma ur_real_indicator_and :
     real_indicator (P /\ Q) = (real_indicator P * real_indicator Q)%R.
 Proof.
   intros P Q.
-  destruct (excluded_middle_informative P) as [HP | HP];
-    destruct (excluded_middle_informative Q) as [HQ | HQ].
-  - rewrite (real_indicator_true _ (conj HP HQ)).
-    rewrite (real_indicator_true P HP), (real_indicator_true Q HQ); ring.
-  - rewrite (real_indicator_false (P /\ Q)) by tauto.
-    rewrite (real_indicator_false Q HQ); ring.
-  - rewrite (real_indicator_false (P /\ Q)) by tauto.
-    rewrite (real_indicator_false P HP); ring.
-  - rewrite (real_indicator_false (P /\ Q)) by tauto.
-    rewrite (real_indicator_false P HP); ring.
+  unfold real_indicator.
+  destruct (boolp.pselect P) as [HP | HP];
+    destruct (boolp.pselect Q) as [HQ | HQ];
+    destruct (boolp.pselect (P /\ Q)) as [HPQ | HPQ];
+    first [ring | exfalso; tauto].
 Qed.
 
 Lemma rpv_eq_dec_neq :
@@ -218,30 +195,10 @@ Proof.
       apply ur_sat_ylow in Hyl; lra.
 Qed.
 
-Lemma ur_cdf_half : uniform_cdf 0 1 (1 / 2) = (1 / 2)%R.
-Proof.
-  unfold uniform_cdf.
-  destruct (Rle_dec (1 / 2) 0) as [H | H]; [lra |].
-  destruct (Rle_dec 1 (1 / 2)) as [H' | H']; [lra |].
-  field.
-Qed.
-
 (** * Evaluating the nested integral
 
-    [q_eval_integral] peels exactly one binder, so the inner integral stays
-    folded and can be discharged by its own lemma. *)
-
-Lemma q_eval_integral :
-  forall (x : RealProgramVar) (d : Distribution) (q : PConstruct) (v : state),
-    q_eval (QIntegral x d q) v =
-    real_integral
-      (fun k => distribution_density d v k * q_eval q (update_real v x k)).
-Proof. reflexivity. Qed.
-
-Lemma ur_density_eq :
-  forall (v : state) (z : R),
-    distribution_density ur_unit v z = uniform_density_R 0 1 z.
-Proof. reflexivity. Qed.
+    The inner integral over [ur_y] is an indicator on the outer variable
+    times a constant; the outer integral is then a constant on an interval. *)
 
 Lemma ur_inner_reject :
   forall (v : state) (k : R),
@@ -250,20 +207,28 @@ Lemma ur_inner_reject :
     (real_indicator (k < 1 / 2)%R * (1 / 2))%R.
 Proof.
   intros v k.
-  rewrite q_eval_integral.
-  transitivity
-    (real_indicator (k < 1 / 2)%R *
-     real_integral
-       (fun m => uniform_density_R 0 1 m * real_indicator (m < 1 / 2)%R))%R.
-  - rewrite <- real_integral_scale.
-    apply real_integral_extensional; intro m.
-    rewrite ur_density_eq.
-    cbn [q_eval].
-    rewrite ur_indicator_reject.
-    ring.
-  - rewrite uniform_integral_strict_cdf by lra.
-    rewrite ur_cdf_half.
-    reflexivity.
+  unfold ur_unit; rewrite q_eval_unit_uniform.
+  destruct (Rlt_dec k (1 / 2)) as [Hk | Hk].
+  - rewrite (real_indicator_true _ Hk).
+    rewrite (real_integral_extensional _
+               (fun m => real_indicator (0 <= m < 1 / 2)%R * 1)).
+    + rewrite real_integral_open_const by lra; ring.
+    + intro m; rewrite q_eval_indicatorE, ur_indicator_reject,
+        (real_indicator_true (k < 1 / 2)%R Hk).
+      destruct (Rlt_dec m (1 / 2)) as [Hm | Hm].
+      * rewrite (real_indicator_true (m < 1 / 2)%R Hm).
+        destruct (Rle_dec 0 m) as [H0 | H0].
+        -- rewrite (real_indicator_true (0 <= m <= 1)%R) by lra.
+           rewrite (real_indicator_true (0 <= m < 1 / 2)%R) by lra; ring.
+        -- rewrite (real_indicator_false (0 <= m <= 1)%R) by lra.
+           rewrite (real_indicator_false (0 <= m < 1 / 2)%R) by lra; ring.
+      * rewrite (real_indicator_false (m < 1 / 2)%R Hm).
+        rewrite (real_indicator_false (0 <= m < 1 / 2)%R) by lra; ring.
+  - rewrite (real_indicator_false _ Hk).
+    rewrite (real_integral_extensional _ (fun _ => 0%R)).
+    + rewrite real_integral_zero; ring.
+    + intro m; rewrite q_eval_indicatorE, ur_indicator_reject,
+        (real_indicator_false (k < 1 / 2)%R Hk); ring.
 Qed.
 
 Lemma ur_inner_accept :
@@ -274,20 +239,50 @@ Lemma ur_inner_accept :
     (real_indicator (k < 1 / 2)%R * (1 / 2))%R.
 Proof.
   intros v k.
-  rewrite q_eval_integral.
-  transitivity
-    (real_indicator (k < 1 / 2)%R *
-     real_integral
-       (fun m => uniform_density_R 0 1 m * real_indicator (1 / 2 <= m)%R))%R.
-  - rewrite <- real_integral_scale.
-    apply real_integral_extensional; intro m.
-    rewrite ur_density_eq.
-    cbn [q_eval].
-    rewrite ur_indicator_accept.
-    ring.
-  - rewrite uniform_integral_survival by lra.
-    rewrite ur_cdf_half.
-    lra.
+  unfold ur_unit; rewrite q_eval_unit_uniform.
+  destruct (Rlt_dec k (1 / 2)) as [Hk | Hk].
+  - rewrite (real_indicator_true _ Hk).
+    rewrite (real_integral_extensional _
+               (fun m => real_indicator (1 / 2 <= m <= 1)%R * 1)).
+    + rewrite real_integral_closed_const by lra; field.
+    + intro m; rewrite q_eval_indicatorE, ur_indicator_accept,
+        (real_indicator_true (k < 1 / 2)%R Hk).
+      destruct (Rle_dec (1 / 2) m) as [Hm | Hm].
+      * rewrite (real_indicator_true (1 / 2 <= m)%R Hm).
+        destruct (Rle_dec m 1) as [H1 | H1].
+        -- rewrite (real_indicator_true (0 <= m <= 1)%R) by lra.
+           rewrite (real_indicator_true (1 / 2 <= m <= 1)%R) by lra; ring.
+        -- rewrite (real_indicator_false (0 <= m <= 1)%R) by lra.
+           rewrite (real_indicator_false (1 / 2 <= m <= 1)%R) by lra; ring.
+      * rewrite (real_indicator_false (1 / 2 <= m)%R Hm).
+        rewrite (real_indicator_false (1 / 2 <= m <= 1)%R) by lra; ring.
+  - rewrite (real_indicator_false _ Hk).
+    rewrite (real_integral_extensional _ (fun _ => 0%R)).
+    + rewrite real_integral_zero; ring.
+    + intro m; rewrite q_eval_indicatorE, ur_indicator_accept,
+        (real_indicator_false (k < 1 / 2)%R Hk); ring.
+Qed.
+
+(** The outer integral of [1_(k < 1/2) * 1/2] against [uniform(0, 1)]. *)
+Lemma ur_outer_quarter :
+  forall f : R -> R,
+    (forall k, f k = (real_indicator (k < 1 / 2)%R * (1 / 2))%R) ->
+    real_integral (fun k => real_indicator (0 <= k <= 1)%R * f k) = (1 / 4)%R.
+Proof.
+  intros f Hf.
+  rewrite (real_integral_extensional _
+             (fun k => real_indicator (0 <= k < 1 / 2)%R * (1 / 2))).
+  - rewrite real_integral_open_const by lra; field.
+  - intro k; rewrite Hf.
+    destruct (Rlt_dec k (1 / 2)) as [Hk | Hk].
+    + rewrite (real_indicator_true (k < 1 / 2)%R Hk).
+      destruct (Rle_dec 0 k) as [H0 | H0].
+      * rewrite (real_indicator_true (0 <= k <= 1)%R) by lra.
+        rewrite (real_indicator_true (0 <= k < 1 / 2)%R) by lra; ring.
+      * rewrite (real_indicator_false (0 <= k <= 1)%R) by lra.
+        rewrite (real_indicator_false (0 <= k < 1 / 2)%R) by lra; ring.
+    + rewrite (real_indicator_false (k < 1 / 2)%R Hk).
+      rewrite (real_indicator_false (0 <= k < 1 / 2)%R) by lra; ring.
 Qed.
 
 Lemma ur_qeval_reject :
@@ -297,18 +292,8 @@ Lemma ur_qeval_reject :
       v = (1 / 4)%R.
 Proof.
   intro v.
-  rewrite q_eval_integral.
-  transitivity
-    ((1 / 2) *
-     real_integral
-       (fun k => uniform_density_R 0 1 k * real_indicator (k < 1 / 2)%R))%R.
-  - rewrite <- real_integral_scale.
-    apply real_integral_extensional; intro k.
-    rewrite ur_density_eq, ur_inner_reject.
-    ring.
-  - rewrite uniform_integral_strict_cdf by lra.
-    rewrite ur_cdf_half.
-    lra.
+  unfold ur_unit at 1; rewrite q_eval_unit_uniform.
+  apply ur_outer_quarter; intro k; apply ur_inner_reject.
 Qed.
 
 Lemma ur_qeval_accept :
@@ -319,18 +304,8 @@ Lemma ur_qeval_accept :
             (QIndicator (c_and ur_target (c_not ur_reject))))) v = (1 / 4)%R.
 Proof.
   intro v.
-  rewrite q_eval_integral.
-  transitivity
-    ((1 / 2) *
-     real_integral
-       (fun k => uniform_density_R 0 1 k * real_indicator (k < 1 / 2)%R))%R.
-  - rewrite <- real_integral_scale.
-    apply real_integral_extensional; intro k.
-    rewrite ur_density_eq, ur_inner_accept.
-    ring.
-  - rewrite uniform_integral_strict_cdf by lra.
-    rewrite ur_cdf_half.
-    lra.
+  unfold ur_unit at 1; rewrite q_eval_unit_uniform.
+  apply ur_outer_quarter; intro k; apply ur_inner_accept.
 Qed.
 
 (** * Certificate data *)
@@ -348,10 +323,8 @@ Lemma ur_unit_valid_under :
     pformula_valid
       (PFImpl pre (p_almost_sure (distribution_valid_formula ur_unit))).
 Proof.
-  intros pre ps Hadm.
-  cbn [psatisfies]; intro Hignore.
-  clear Hignore; revert ps.
-  apply p_almost_sure_of_pointwise.
+  intros pre ps Hadm _.
+  refine (p_almost_sure_of_pointwise _ _ ps Hadm).
   intro v.
   unfold ur_unit.
   cbn [distribution_valid_formula c_lt c_not satisfies term_eval].
@@ -378,8 +351,7 @@ Proof.
             (while_body_post 1 ur_regions (ur_transitions i) ur_guard ur_q
                (ur_exits i)))).
   - apply HRealSample; [| apply ur_unit_valid_under].
-    intro ps.
-    intro Hadm.
+    intros ps Hadm.
     cbn [psatisfies].
     intro Hpre.
     apply psatisfies_p_and in Hpre.
@@ -395,13 +367,15 @@ Proof.
     apply psatisfies_p_and; split; [apply psatisfies_p_and; split | ].
     + apply psatisfies_p_true.
     + apply psatisfies_p_eq.
-      cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula
+      cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
+           pconstruct_size subst_bool_cformula
            sample_pterm pterm_eval].
       rewrite !bpv_eq_dec_refl.
       rewrite (t3_expect_const ps _ (1 / 4)%R Hmass);
         [reflexivity | intro v; apply ur_qeval_reject].
     + apply psatisfies_p_eq.
-      cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula
+      cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
+           pconstruct_size subst_bool_cformula
            ur_target c_and c_not sample_pterm pterm_eval].
       rewrite !bpv_eq_dec_refl.
       rewrite (t3_expect_const ps _ (1 / 4)%R Hmass);
@@ -412,7 +386,7 @@ Proof.
            (while_body_post 1 ur_regions (ur_transitions i) ur_guard ur_q
               (ur_exits i))).
     + apply HRealSample; [| apply ur_unit_valid_under].
-      intro ps; cbn [psatisfies]; intro H; exact H.
+      intros ps Hadm; cbn [psatisfies]; intro H; exact H.
     + apply HBoolAssign.
 Qed.
 
@@ -464,8 +438,7 @@ Proof.
          subst_bool_pformula ur_retry c_true
            (p_concentrated_mass (ur_regions 0) (PVar ur_w)))
       (eta2 := p_concentrated_mass (ur_regions 0) (PVar ur_w)).
-    + intro ps.
-    + intro Hadm.
+    + intros ps Hadm.
       cbn [psatisfies].
       intro Hpre.
       apply psatisfies_p_eq in Hpre.
@@ -473,12 +446,13 @@ Proof.
       unfold p_concentrated_mass, ur_regions, ur_guard.
       rewrite subst_bool_pformula_p_and, !subst_bool_pformula_p_eq.
       apply psatisfies_p_and; split; apply psatisfies_p_eq;
-        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula
+        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
+           pconstruct_size subst_bool_cformula
              pterm_eval].
       * rewrite !bpv_eq_dec_refl; reflexivity.
       * exact Hpre.
     + apply HBoolAssign.
-    + intro ps; cbn [psatisfies]; tauto.
+    + intros ps Hadm; cbn [psatisfies]; tauto.
   - replace (1 / 3)%R with (ur_solution 0) by reflexivity.
     exact ur_loop_derivable.
 Qed.

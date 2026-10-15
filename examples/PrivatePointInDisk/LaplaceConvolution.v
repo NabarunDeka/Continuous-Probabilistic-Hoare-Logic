@@ -1,60 +1,24 @@
 (**
-  LaplaceConvolution.v -- the law of a SUM (equivalently, a difference) of
-  two independent Laplace variables.
+  LaplaceConvolution.v -- analytic support, no program and no triple.
 
-  NO TRIPLE.  This file contains no command and no assertion; it is a purely
-  analytic lemma about [real_integral], in the same role that
-  UniformConstructions/UniformAxiomsAdditional.v plays for the uniform
-  examples.
-
-  THE RESULT ([lc_convolution], for [0 < b]):
+  [lc_convolution] (for 0 < b), with [f_b] the centred Laplace density
+  [lc_density]:
 
       INT  f_b(u) * f_b(z - u)  du  =  (1/(4b)) * (1 + |z|/b) * exp(-|z|/b)
 
-  where [f_b] is the centred Laplace density [lc_density].  Since the
-  Laplace law is symmetric, [-Y] is Laplace whenever [Y] is, so this is
-  simultaneously the density of [X + Y] and of [X - Y] for independent
-  [X], [Y] ~ Laplace(0, b).
-
-  WHY IT IS WORTH STATING: THE DIFFERENCE OF TWO LAPLACES IS NOT LAPLACE.
-
-  A centred Laplace density is [(1/(2c)) exp(-|z|/c)] -- log-linear in |z|.
-  The density above carries an extra [(1 + |z|/b)] factor, so its log is not
-  linear and no choice of [c] matches it.  Equivalently, the characteristic
-  function is [1/(1 + b^2 t^2)^2] rather than [1/(1 + b^2 t^2)].  It agrees
-  with Laplace(0, 2b) at [z = 0] and shares the tail rate of Laplace(0, b),
-  which is presumably why the mistake is tempting; it equals neither.
-
-  This matters for PointInDiskInPlace.v / PointInDiskAdditive.v.  Perturbing
-  the point and the centre SEPARATELY and then testing membership leaves the
-  two differences [px' - cx'] and [py' - cy'] distributed as above -- NOT as
-  Laplace -- so any reduction of that variant which assumes otherwise is
-  wrong.  See flags/FLAGS.md F14.
-
-  It does not, on its own, unblock that variant: the obstruction there is
-  the DISK, whose sections have square-root endpoints, and that survives any
-  reduction of the noise count.  What this lemma does enable is the
-  one-dimensional version, where the region is an interval and no square
-  root appears.
-
-  THE PROOF.  Both densities are exponentials of absolute values, so the
-  product is [exp] of [-(|u| + |z-u|)/b], and that exponent is piecewise
-  linear with breakpoints at [0] and [z].  Splitting the line into the three
-  half-open regions [u < m], [m <= u < M], [M <= u] (with [m], [M] the
-  smaller and larger of [0] and [z]) makes each piece a bare exponential or
-  a constant, which is exactly what CPHL.v's [real_integral_exp_below],
-  [real_integral_exp_above] and [real_integral_between_constant] evaluate.
-  The two ends contribute [b/2] each and the middle contributes [|z|], which
-  is where the [(b + |z|)] factor comes from.
-
-  No new axioms: the three exponential-region laws and the linearity of
-  [real_integral], all already in CPHL.v.
+  i.e. the density of the difference of two independent Laplace(0, b)
+  variables; [lc_difference_not_laplace] shows it is not a Laplace density.
+  Axiom-free: the exponential-region integrals come from
+  CPHLFacts.ExponentialIntegrals and the constant-region integral from
+  CPHLFacts.RealIntegrationFacts.
 *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
-From Stdlib Require Import ClassicalDescription.
-Require Import CPHL.
+Require Import MeasureIntegration CPHL.
+Require Import CPHLFacts.CalculationFacts.
+Require Import CPHLFacts.RealIntegrationFacts.
+Require Import CPHLFacts.ExponentialIntegrals.
 
 Open Scope R_scope.
 
@@ -100,20 +64,33 @@ Proof.
       ring.
 Qed.
 
-Lemma lc_split :
-  forall (m M : R) (g : R -> R),
+(** Splitting an integral over the three regions, given the integrand's
+    form on each region and integrability of those forms. *)
+Lemma lc_split3 :
+  forall (m M : R) (g A B C : R -> R),
     (m <= M)%R ->
+    (forall u, real_indicator (u < m)%R * g u = real_indicator (u < m)%R * A u) ->
+    (forall u, real_indicator (m <= u < M)%R * g u
+               = real_indicator (m <= u < M)%R * B u) ->
+    (forall u, real_indicator (M <= u)%R * g u = real_indicator (M <= u)%R * C u) ->
+    real_integrable (fun u => real_indicator (u < m)%R * A u) ->
+    real_integrable (fun u => real_indicator (m <= u < M)%R * B u) ->
+    real_integrable (fun u => real_indicator (M <= u)%R * C u) ->
     real_integral g =
-    (real_integral (fun u => real_indicator (u < m)%R * g u)
-     + real_integral (fun u => real_indicator (m <= u < M)%R * g u)
-     + real_integral (fun u => real_indicator (M <= u)%R * g u))%R.
+    (real_integral (fun u => real_indicator (u < m)%R * A u)
+     + real_integral (fun u => real_indicator (m <= u < M)%R * B u)
+     + real_integral (fun u => real_indicator (M <= u)%R * C u))%R.
 Proof.
-  intros m M g Hm.
+  intros m M g A B C Hm HA HB HC IA IB IC.
   rewrite <- real_integral_add, <- real_integral_add.
-  apply real_integral_extensional; intro u.
-  rewrite <- (Rmult_1_l (g u)) at 1.
-  rewrite <- (lc_indicator_partition m M u Hm).
-  ring.
+  - apply real_integral_extensional; intro u.
+    rewrite <- HA, <- HB, <- HC.
+    rewrite <- (Rmult_1_l (g u)) at 1.
+    rewrite <- (lc_indicator_partition m M u Hm).
+    ring.
+  all: first [ exact IA | exact IB | exact IC
+             | exact (@ConcreteMeasure.integrable_add _ RealIntegration.Space
+                 RealIntegration.lebesgue _ _ IA IB) ].
 Qed.
 
 (** * The three region integrals *)
@@ -125,9 +102,9 @@ Lemma lc_below_exp :
     (C * (exp (k * m) / k))%R.
 Proof.
   intros m k C Hk.
-  rewrite <- (real_integral_exp_below m k Hk).
+  rewrite <- (real_integral_exp_below_proved m k Hk).
   unfold real_integral_below.
-  rewrite <- real_integral_scale.
+  rewrite <- real_integral_scale by (apply real_integrable_exp_below; exact Hk).
   apply real_integral_extensional; intro u; ring.
 Qed.
 
@@ -138,9 +115,9 @@ Lemma lc_above_exp :
     (C * (- exp (k * M) / k))%R.
 Proof.
   intros M k C Hk.
-  rewrite <- (real_integral_exp_above M k Hk).
+  rewrite <- (real_integral_exp_above_proved M k Hk).
   unfold real_integral_above.
-  rewrite <- real_integral_scale.
+  rewrite <- real_integral_scale by (apply real_integrable_exp_above; exact Hk).
   apply real_integral_extensional; intro u; ring.
 Qed.
 
@@ -151,10 +128,40 @@ Lemma lc_between_const :
     (C * (M - m))%R.
 Proof.
   intros m M C Hm.
-  rewrite <- (real_integral_between_constant m M C Hm).
-  unfold real_integral_between.
-  apply real_integral_extensional; intro u; ring.
+  transitivity (real_integral (fun u => C * (real_indicator (m <= u < M)%R * 1)))%R.
+  - apply real_integral_extensional; intro u; ring.
+  - rewrite real_integral_scale by apply real_integrable_between_one.
+    assert (H : real_integral (fun u => real_indicator (m <= u < M)%R * 1)%R
+                = (M - m)%R) by exact (real_integral_between_one m M Hm).
+    rewrite H; reflexivity.
 Qed.
+
+(** Integrability of the region forms used below. *)
+Lemma lc_integrable_minus :
+  forall (A : R -> Prop) (f g : R -> R),
+    real_integrable (fun x => real_indicator (A x) * f x) ->
+    real_integrable (fun x => real_indicator (A x) * g x) ->
+    real_integrable (fun x => real_indicator (A x) * (f x - g x))%R.
+Proof.
+  intros A f g Hf Hg.
+  apply real_integrable_ext with
+    (f := fun x => (real_indicator (A x) * f x
+                    + (-1) * (real_indicator (A x) * g x))%R).
+  - intro x; ring.
+  - exact (@ConcreteMeasure.integrable_add _ RealIntegration.Space
+      RealIntegration.lebesgue _ _ Hf
+      (@ConcreteMeasure.integrable_scale _ RealIntegration.Space
+         RealIntegration.lebesgue (-1) _ Hg)).
+Qed.
+
+Ltac lc_integrable :=
+  first
+    [ apply real_integrable_between_constant
+    | apply lc_integrable_minus; lc_integrable
+    | apply real_integrable_mask_scale;
+      first [ apply real_integrable_exp_between
+            | apply real_integrable_exp_below; assumption
+            | apply real_integrable_exp_above; assumption ] ].
 
 (** * The product of the two densities is a single exponential *)
 
@@ -186,14 +193,13 @@ Proof.
   assert (Hkn : (- (2 / b) < 0)%R) by lra.
   destruct (Rle_dec 0 z) as [Hz | Hz].
   - (* z >= 0 : breakpoints 0 then z *)
-    rewrite (lc_split 0 z _ Hz).
-    rewrite (real_integral_extensional
-               (fun u => real_indicator (u < 0)%R
-                         * (lc_density b u * lc_density b (z - u)))
-               (fun u => real_indicator (u < 0)%R
-                         * (((1 / (4 * b * b)) * exp (- z / b))
-                            * exp ((2 / b) * u)))).
-    2:{ intro u.
+    rewrite (lc_split3 0 z _
+               (fun u => (((1 / (4 * b * b)) * exp (- z / b))
+                            * exp ((2 / b) * u)))
+               (fun u => ((1 / (4 * b * b)) * exp (- z / b)))
+               (fun u => (((1 / (4 * b * b)) * exp (z / b))
+                            * exp ((- (2 / b)) * u))) Hz).
+    2:{ intro u; cbv beta.
         destruct (Rlt_dec u 0) as [Hu | Hu].
         - rewrite (real_indicator_true (u < 0)%R Hu).
           unfold lc_density.
@@ -204,12 +210,7 @@ Proof.
             by (field; exact Hb2).
           rewrite exp_plus; ring.
         - rewrite (real_indicator_false (u < 0)%R) by lra; ring. }
-    rewrite (real_integral_extensional
-               (fun u => real_indicator (0 <= u < z)%R
-                         * (lc_density b u * lc_density b (z - u)))
-               (fun u => real_indicator (0 <= u < z)%R
-                         * ((1 / (4 * b * b)) * exp (- z / b)))).
-    2:{ intro u.
+    2:{ intro u; cbv beta.
         destruct (Rle_dec 0 u) as [Hu1 | Hu1];
           [destruct (Rlt_dec u z) as [Hu2 | Hu2] |].
         - rewrite (real_indicator_true (0 <= u < z)%R (conj Hu1 Hu2)).
@@ -224,13 +225,7 @@ Proof.
             by (intros [_ Hc]; lra); ring.
         - rewrite (real_indicator_false (0 <= u < z)%R)
             by (intros [Hc _]; lra); ring. }
-    rewrite (real_integral_extensional
-               (fun u => real_indicator (z <= u)%R
-                         * (lc_density b u * lc_density b (z - u)))
-               (fun u => real_indicator (z <= u)%R
-                         * (((1 / (4 * b * b)) * exp (z / b))
-                            * exp ((- (2 / b)) * u)))).
-    2:{ intro u.
+    2:{ intro u; cbv beta.
         destruct (Rle_dec z u) as [Hu | Hu].
         - rewrite (real_indicator_true (z <= u)%R Hu).
           unfold lc_density.
@@ -241,6 +236,7 @@ Proof.
             by (field; exact Hb2).
           rewrite exp_plus; ring.
         - rewrite (real_indicator_false (z <= u)%R) by lra; ring. }
+    2-4: lc_integrable.
     rewrite (lc_below_exp 0 (2 / b) _ Hk).
     rewrite (lc_between_const 0 z _ Hz).
     rewrite (lc_above_exp z (- (2 / b)) _ Hkn).
@@ -261,14 +257,13 @@ Proof.
   - (* z < 0 : breakpoints z then 0 *)
     assert (Hzlt : (z < 0)%R) by lra.
     assert (Hzle : (z <= 0)%R) by lra.
-    rewrite (lc_split z 0 _ Hzle).
-    rewrite (real_integral_extensional
-               (fun u => real_indicator (u < z)%R
-                         * (lc_density b u * lc_density b (z - u)))
-               (fun u => real_indicator (u < z)%R
-                         * (((1 / (4 * b * b)) * exp (- z / b))
-                            * exp ((2 / b) * u)))).
-    2:{ intro u.
+    rewrite (lc_split3 z 0 _
+               (fun u => (((1 / (4 * b * b)) * exp (- z / b))
+                            * exp ((2 / b) * u)))
+               (fun u => ((1 / (4 * b * b)) * exp (z / b)))
+               (fun u => (((1 / (4 * b * b)) * exp (z / b))
+                            * exp ((- (2 / b)) * u))) Hzle).
+    2:{ intro u; cbv beta.
         destruct (Rlt_dec u z) as [Hu | Hu].
         - rewrite (real_indicator_true (u < z)%R Hu).
           unfold lc_density.
@@ -279,12 +274,7 @@ Proof.
             by (field; exact Hb2).
           rewrite exp_plus; ring.
         - rewrite (real_indicator_false (u < z)%R) by lra; ring. }
-    rewrite (real_integral_extensional
-               (fun u => real_indicator (z <= u < 0)%R
-                         * (lc_density b u * lc_density b (z - u)))
-               (fun u => real_indicator (z <= u < 0)%R
-                         * ((1 / (4 * b * b)) * exp (z / b)))).
-    2:{ intro u.
+    2:{ intro u; cbv beta.
         destruct (Rle_dec z u) as [Hu1 | Hu1];
           [destruct (Rlt_dec u 0) as [Hu2 | Hu2] |].
         - rewrite (real_indicator_true (z <= u < 0)%R (conj Hu1 Hu2)).
@@ -299,13 +289,7 @@ Proof.
             by (intros [_ Hc]; lra); ring.
         - rewrite (real_indicator_false (z <= u < 0)%R)
             by (intros [Hc _]; lra); ring. }
-    rewrite (real_integral_extensional
-               (fun u => real_indicator (0 <= u)%R
-                         * (lc_density b u * lc_density b (z - u)))
-               (fun u => real_indicator (0 <= u)%R
-                         * (((1 / (4 * b * b)) * exp (z / b))
-                            * exp ((- (2 / b)) * u)))).
-    2:{ intro u.
+    2:{ intro u; cbv beta.
         destruct (Rle_dec 0 u) as [Hu | Hu].
         - rewrite (real_indicator_true (0 <= u)%R Hu).
           unfold lc_density.
@@ -316,6 +300,7 @@ Proof.
             by (field; exact Hb2).
           rewrite exp_plus; ring.
         - rewrite (real_indicator_false (0 <= u)%R) by lra; ring. }
+    2-4: lc_integrable.
     rewrite (lc_below_exp z (2 / b) _ Hk).
     rewrite (lc_between_const z 0 _ Hzle).
     rewrite (lc_above_exp 0 (- (2 / b)) _ Hkn).

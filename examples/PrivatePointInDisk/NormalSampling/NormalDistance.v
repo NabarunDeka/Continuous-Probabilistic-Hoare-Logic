@@ -1,83 +1,40 @@
 (**
-  NormalDistance.v -- the point-in-disk test with NORMAL noise applied to
-  the scalar squared DISTANCE.  The Gaussian counterpart of
-  ../PointInDiskAdditive.v, and the companion to NormalDisk.v, which
-  perturbs the four coordinates instead.
+  NormalDistance.v
 
-      d      := (px - cx)^2 + (py - cy)^2;
-      n      <- sample(Gaussian(0, b));
-      d      := d + n;
-      inside := (d < 1)
-
-  THE TRIPLE ([nrm_correct], for [0 < b], writing [D] for the true squared
-  distance [(px-cx)^2 + (py-cy)^2]):
-
-      { Pr[tt] = 1 }
-          nrm_prog px py cx cy b
-      { Pr[inside] = nrm_cdf b (1 - D) }
-
-  UNCONDITIONAL, and with NO added axiom -- not even the Gauss integral that
-  GaussianDifference.v needs.  Contrast NormalDisk.v, whose triple is
-  conditional on a value nobody can supply.
-
-  WHAT [nrm_cdf] IS, AND WHY IT IS A DEFINITION RATHER THAN A FORMULA.
-
-      nrm_cdf b c  =  INT  phi_{0,b}(z) * 1[z < c]  dz
-
-  the centred normal CDF.  For Laplace, CPHL.v can do better: [laplace_cdf]
-  is an elementary FORMULA and [laplace_integral_strict_cdf] evaluates the
-  corresponding integral to it.  The normal CDF is [erf], which is not
-  elementary, so there is no formula to name -- the honest move is to define
-  the function AS the integral and prove the program computes it.
-
-  That is why the postcondition is stated at the cutoff [1 - D] rather than
-  the more natural "[nrm_cdf] at [1], centred on [D]".  Re-centring is a
-  TRANSLATION of the integration variable, which [real_integral] does not
-  support (flags/FLAGS.md F15).  Keeping the noise centred at [0] and moving
-  the cutoff instead needs only a pointwise rewrite of the indicator, which
-  is available.  The two readings agree: [Pr[D + n < 1] = Pr[n < 1 - D]].
-
-  WHERE THIS SITS.  Collecting the four mechanisms in this directory tree:
-
-      noise on the DISTANCE, Laplace  ../PointInDiskAdditive.v   PROVED,
-                                      answer elementary ([laplace_cdf])
-      noise on the DISTANCE, normal   this file                  PROVED,
-                                      answer defined as an integral
-      noise on the POINTS,   Laplace  ../TODO/FourNoiseDisk.v    open
-      noise on the POINTS,   normal   NormalDisk.v               open
-
-  So collapsing to a scalar before adding noise is what makes a mechanism
-  reachable, for either distribution.  Changing the distribution only
-  changes how informative the answer is.
+  Program ([nrm_prog px py cx cy b]):
+      nrm_d := (px - cx)^2 + (py - cy)^2;
+      nrm_n <- sample(gaussian(0, b));
+      nrm_d := nrm_d + nrm_n;
+      nrm_inside := (nrm_d < 1)
+  Triple ([nrm_correct], for 0 < b and any precondition eta; post [nrm_post]):
+      { eta }
+        nrm_prog px py cx cy b
+      { Pr[nrm_inside] = E[ integral nrm_z ~ gaussian(0, b),
+                              indicator[nrm_z < 1 + -1 * ((px-cx)^2 + (py-cy)^2)] ] }
 *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Strings.String.
 From Stdlib Require Import Lra.
-From Stdlib Require Import ClassicalDescription.
 Require Import CPHL.
+Require Import CPHLFacts.DistributionFacts CPHLFacts.CalculationFacts.
 Require Import SampleBeforeLoop.
 Require Import HalfLaplaceRejection.
-Require Import GaussianDifference.
+Require Import CdfAssertions.
 
 Open Scope R_scope.
 Open Scope string_scope.
 Local Open Scope cphl_scope.
 Local Open Scope cphl_hoare_scope.
 
-(** * The centred normal CDF, defined as its integral *)
-
-Definition nrm_cdf (b c : R) : R :=
-  real_integral (fun z => gc_density 0 b z * real_indicator (z < c)%R).
-
 (** * The program
 
     The four coordinates are Rocq reals, so the squared distance is a CLOSED
-    term and the opening assignment makes the integral state-independent --
-    the same device as ../PointInDiskAdditive.v. *)
+    term and the opening assignment makes the integral state-independent. *)
 
 Definition nrm_d : RealProgramVar := real_program_var "nrm_d".
 Definition nrm_n : RealProgramVar := real_program_var "nrm_n".
+Definition nrm_z : RealProgramVar := real_program_var "nrm_z".
 Definition nrm_inside : BoolProgramVar := bool_program_var "nrm_inside".
 
 Definition nrm_minus_one : Term := TConst (-1).
@@ -91,6 +48,10 @@ Definition nrm_sqdist (px py cx cy : R) : Term :=
 Definition nrm_D (px py cx cy : R) : R :=
   ((px - cx) * (px - cx) + (py - cy) * (py - cy))%R.
 
+(** The cutoff [1 - D], as a syntactic term. *)
+Definition nrm_cut (px py cx cy : R) : Term :=
+  <{ 1 + $(nrm_minus_one) * $(nrm_sqdist px py cx cy) }>.
+
 Definition nrm_noise (b : R) : Distribution := <{ gaussian(0, b) }>.
 
 Definition nrm_shift : Term := <{ nrm_d + nrm_n }>.
@@ -103,7 +64,7 @@ Definition nrm_prog (px py cx cy b : R) : Cmd :=
      nrm_d      := $(nrm_shift);
      nrm_inside b= $(nrm_test) }>.
 
-(** * The squared distance evaluates to [nrm_D] in every state *)
+(** * Values of the closed terms *)
 
 Lemma nrm_sqdist_value :
   forall (px py cx cy : R) (v : state),
@@ -114,38 +75,24 @@ Proof.
   cbn [term_eval]; ring.
 Qed.
 
-(** * The single integral produced by the sample
-
-    The noise is centred at [0] and the opening assignment has closed the
-    guard, so this is the centred CDF at the shifted cutoff. *)
-
-Lemma nrm_integral :
-  forall (px py cx cy b : R) (v : state),
-    (0 < b)%R ->
-    q_eval
-      [[ integral nrm_n ~ $(Gaussian (TConst 0) (TConst b)),
-         indicator[ $(nrm_sqdist px py cx cy) + nrm_n < 1 ] ]] v =
-    nrm_cdf b (1 - nrm_D px py cx cy).
+Lemma nrm_cut_value :
+  forall (px py cx cy : R) (v : state),
+    term_eval (nrm_cut px py cx cy) v = 1 - nrm_D px py cx cy.
 Proof.
-  intros px py cx cy b v Hb.
-  unfold nrm_cdf.
-  cbn [q_eval].
-  apply real_integral_extensional; intro z.
-  f_equal.
-  apply real_indicator_extensional.
-  unfold nrm_test, c_lt, update_real, update_real_values.
-  cbn [satisfies c_not term_eval real_program_values].
-  rewrite rpv_eq_dec_refl.
-  rewrite nrm_sqdist_value.
-  split.
-  - intro H; lra.
-  - intros H Hc; lra.
+  intros px py cx cy v.
+  unfold nrm_cut, nrm_minus_one.
+  cbn [term_eval]; rewrite nrm_sqdist_value; ring.
 Qed.
 
-(** * The weakest precondition *)
+(** * The postcondition and its weakest precondition *)
+
+(** The centred normal CDF at the cutoff, as a probabilistic construct. *)
+Definition nrm_cdf_construct (px py cx cy b : R) : PConstruct :=
+  [[ integral nrm_z ~ $(nrm_noise b),
+     indicator[ nrm_z < $(nrm_cut px py cx cy) ] ]].
 
 Definition nrm_post (px py cx cy b : R) : PFormula :=
-  [[ Pr[nrm_inside] = $(nrm_cdf b (1 - nrm_D px py cx cy)) ]].
+  [[ Pr[nrm_inside] = E[ $(nrm_cdf_construct px py cx cy b) ] ]].
 
 Definition nrm_after_add (px py cx cy b : R) : PFormula :=
   subst_bool_pformula nrm_inside nrm_test (nrm_post px py cx cy b).
@@ -157,33 +104,91 @@ Definition nrm_after_assign (px py cx cy b : R) : PFormula :=
   sample_pformula nrm_n (nrm_noise b) (nrm_after_sample px py cx cy b).
 
 Definition nrm_pre (px py cx cy b : R) : PFormula :=
-  [[ E[ integral nrm_n ~ $(Gaussian (TConst 0) (TConst b)),
+  [[ E[ integral nrm_n ~ $(nrm_noise b),
         indicator[ $(nrm_sqdist px py cx cy) + nrm_n < 1 ] ]
-     = $(nrm_cdf b (1 - nrm_D px py cx cy)) ]].
+     = E[ integral nrm_n ~ $(nrm_noise b),
+          $(nrm_cdf_construct px py cx cy b) ] ]].
 
-(** The opening assignment closes the guard; [nrm_n] stays bound. *)
 Lemma nrm_pre_is_wp :
   forall px py cx cy b : R,
     subst_real_pformula nrm_d (nrm_sqdist px py cx cy)
       (nrm_after_assign px py cx cy b) = nrm_pre px py cx cy b.
 Proof. intros; reflexivity. Qed.
 
-Lemma nrm_normalized_implies_pre :
+(** * Analysis: both sides of the precondition are the same CDF value *)
+
+Lemma nrm_noise_valid :
+  forall (b : R) (v : state), 0 < b -> distribution_valid (nrm_noise b) v.
+Proof. intros b v Hb; exact Hb. Qed.
+
+Lemma nrm_cdf_construct_value :
+  forall (px py cx cy b : R) (v : state),
+    0 < b ->
+    q_eval (nrm_cdf_construct px py cx cy b) v =
+    real_integral (fun z =>
+      distribution_density (nrm_noise b) v z *
+      real_indicator (z < 1 - nrm_D px py cx cy)).
+Proof.
+  intros px py cx cy b v Hb.
+  unfold nrm_cdf_construct.
+  rewrite q_integral_density by (apply nrm_noise_valid; exact Hb).
+  apply real_integral_extensional; intro z.
+  f_equal.
+  rewrite q_eval_indicatorE.
+  apply real_indicator_extensional.
+  unfold c_lt, update_real, update_real_values.
+  cbn [satisfies c_not].
+  rewrite nrm_cut_value.
+  cbn [term_eval real_program_values].
+  unfold nrm_z; rewrite rpv_eq_dec_refl.
+  split; intro H; lra.
+Qed.
+
+Lemma nrm_density_state_free :
+  forall (b z : R) (v w : state),
+    distribution_density (nrm_noise b) v z =
+    distribution_density (nrm_noise b) w z.
+Proof. intros; reflexivity. Qed.
+
+Lemma nrm_pre_valid :
   forall px py cx cy b : R,
-    (0 < b)%R ->
-    pformula_valid [[ Pr[true] = 1 -> $(nrm_pre px py cx cy b) ]].
+    0 < b -> pformula_valid (nrm_pre px py cx cy b).
 Proof.
   intros px py cx cy b Hb ps Hadm.
-  cbn [psatisfies]; intro Hnorm.
-  apply psatisfies_p_eq in Hnorm.
-  cbn [pterm_eval] in Hnorm.
   unfold nrm_pre.
   apply psatisfies_p_eq.
   cbn [pterm_eval].
-  apply t3_expect_const.
-  - exact Hnorm.
-  - intro v; apply nrm_integral; exact Hb.
+  apply expectation_extensional; intro v.
+  set (c := real_integral (fun z =>
+              distribution_density (nrm_noise b) v z *
+              real_indicator (z < 1 - nrm_D px py cx cy))).
+  rewrite (q_integral_density _ _ _ v) by (apply nrm_noise_valid; exact Hb).
+  rewrite (q_integral_density nrm_n (nrm_noise b)
+             (nrm_cdf_construct px py cx cy b) v)
+    by (apply nrm_noise_valid; exact Hb).
+  transitivity c.
+  - unfold c; apply real_integral_extensional; intro z.
+    f_equal.
+    rewrite q_eval_indicatorE.
+    apply real_indicator_extensional.
+    unfold c_lt, update_real, update_real_values.
+    cbn [satisfies c_not term_eval real_program_values].
+    unfold nrm_n; rewrite rpv_eq_dec_refl.
+    rewrite nrm_sqdist_value.
+    split; intro H; lra.
+  - rewrite (real_integral_extensional _
+               (fun z => c * distribution_density (nrm_noise b) v z)).
+    + rewrite real_integral_scale
+        by exact (distribution_density_integrable (nrm_noise_valid b v Hb)).
+      rewrite (real_integral_distribution_density (nrm_noise_valid b v Hb)).
+      change (c = c * 1); ring.
+    + intro z.
+      rewrite (nrm_cdf_construct_value px py cx cy b _ Hb).
+      unfold c.
+      rewrite Rmult_comm; f_equal.
 Qed.
+
+(** * The mechanism *)
 
 Lemma nrm_noise_valid_under :
   forall (b : R) (pre : PFormula),
@@ -192,25 +197,24 @@ Lemma nrm_noise_valid_under :
       [[ $(pre) -> almost_sure[$(distribution_valid_formula (nrm_noise b))] ]].
 Proof.
   intros b pre Hb ps Hadm.
-  cbn [psatisfies]; intro Hignore.
-  clear Hignore; revert ps.
-  apply p_almost_sure_of_pointwise.
+  cbn [psatisfies]; intros _.
+  refine (p_almost_sure_of_pointwise _ _ ps Hadm).
   intro v.
   unfold nrm_noise.
   cbn [distribution_valid_formula c_lt c_not satisfies term_eval].
   intro Hle; lra.
 Qed.
 
-(** * The mechanism *)
-
 Theorem nrm_correct :
-  forall px py cx cy b : R,
+  forall (px py cx cy b : R) (eta : PFormula),
     (0 < b)%R ->
-    {{ Pr[true] = 1 }}
+    {{ $(eta) }}
       $(nrm_prog px py cx cy b)
-    {{ Pr[nrm_inside] = $(nrm_cdf b (1 - nrm_D px py cx cy)) }}.
+    {{ Pr[nrm_inside] = E[ integral nrm_z ~ gaussian(0, b),
+                           indicator[ nrm_z < $(nrm_cut px py cx cy) ] ] }}.
 Proof.
-  intros px py cx cy b Hb.
+  intros px py cx cy b eta Hb.
+  change (hoare_derivable eta (nrm_prog px py cx cy b) (nrm_post px py cx cy b)).
   unfold nrm_prog.
   eapply HSeq with (eta2 := nrm_after_assign px py cx cy b).
   - eapply HConseq with
@@ -218,12 +222,13 @@ Proof.
                  (nrm_after_assign px py cx cy b))
       (eta2 := nrm_after_assign px py cx cy b).
     + rewrite nrm_pre_is_wp.
-      apply nrm_normalized_implies_pre; exact Hb.
+      intros ps Hadm _.
+      apply nrm_pre_valid; assumption.
     + apply HRealAssign.
-    + intro ps; cbn [psatisfies]; tauto.
+    + intros ps Hadm; cbn [psatisfies]; tauto.
   - eapply HSeq with (eta2 := nrm_after_sample px py cx cy b).
     + apply HRealSample.
-      * intro ps; cbn [psatisfies]; intro H; exact H.
+      * intros ps Hadm; cbn [psatisfies]; intro H; exact H.
       * apply nrm_noise_valid_under; exact Hb.
     + eapply HSeq with (eta2 := nrm_after_add px py cx cy b).
       * apply HRealAssign.

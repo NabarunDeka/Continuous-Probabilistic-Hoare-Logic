@@ -1,65 +1,19 @@
 (**
-  ExponentialFromLaplace.v -- fold a Laplace draw onto its own absolute
-  value.  The folded variable is Exp(1/b).
+  ExponentialFromLaplace.v
 
-      x   <- sample(Laplace(0,b));
+  Program ([ef_prog b]):
+
+      x <- sample(laplace(0, b));
       neg := (x < 0);
-      if neg then e := (-1) * x else e := x end        (* e = |x| *)
+      if neg then e := (-1) * x else e := x end
 
-  THE TRIPLE ([ef_correct], for [0 <= t] and [0 < b]):
+  Triple ([ef_correct], for 0 <= t, 0 < b, and G such that the state-logic
+  CDF formula [t3_cdf t b G] (HalfLaplaceRejection.v) is valid):
 
-      { Pr[tt] = 1 }
-          ef_prog b
-      { Pr[e < t]  =  1 - exp(-t/b) }
+      t3_cdf t b G :=
+        Pr[tt] = 1  ->  E[ integral z ~ exponential(1/b), 1_(z <= t) ] = G
 
-  which is exactly the Exp(1/b) CDF.  This is the converse of
-  LaplaceFromExponential.v.
-
-  HOW MUCH OF THE ROUND TRIP THIS CLOSES.  LaplaceFromExponential.v assumes
-  TWO things about its source: the CDF [Pr[e < t]] and the reflected
-  survival [Pr[-e < t]].  The theorem below supplies the FIRST, and only for
-  [0 <= t].  Two facts are still missing before Laplace -> Exp -> Laplace is
-  a closed loop in the logic:
-
-    (a) [Pr[e < t] = 0] for [t < 0]  -- both fold regions are empty there,
-        so the same proof shape works with both integrals evaluating to 0;
-    (b) [Pr[-e < t] = exp_survival b t], which needs [0 <= e] almost surely
-        and is not an instance of anything proved here.
-
-  Neither is deep, but neither is proved, so the round trip is currently a
-  claim about the mathematics rather than a Rocq-checked composition.
-
-  WHY A CONDITIONAL AND NOT AN ABSOLUTE VALUE.  [Term] is a polynomial
-  algebra -- [TProgVar], [TConst], [TAdd], [TMul] -- with no [Rabs], so
-  [e := |x|] cannot be written.  Branching on the sign and negating with
-  [TMul (TConst (-1))] is the only route, and it is why this program needs
-  [HIfEq] where a language with [Rabs] would need nothing at all.
-
-  WHAT IS NEW HERE -- AN ATOM THAT WILL NOT CANCEL.  Folding sends the two
-  halves of the line onto [0,t):
-
-      then-branch:   { -t < x < 0 }      (OPEN at -t)
-      else-branch:   { 0 <= x < t }      (half-open)
-
-  The else half is a difference of two strict CDFs and evaluates exactly.
-  The then half is not: negation flips [<] into [>], so its left endpoint is
-  open, while CPHL's closed forms come in only two shapes --
-  [laplace_integral_strict_cdf] for [z < c] and [laplace_integral_survival]
-  for [c <= z].  Neither produces an open left endpoint, and the pointwise
-  identity one would like,
-
-      1_(-t,0) = 1_{z<0} - 1_{z<-t} - 1_{z=-t},
-
-  is FALSE at [t = 0], [z = 0].  The repair is to move the atom to the other
-  side, where it is correct for every [t >= 0]:
-
-      1_(-t,0) + 1_{z=-t} * 1_{z<0}  =  1_{z<0} - 1_{z<-t}
-
-  and then kill it with [real_integral_singleton_zero].  That axiom is
-  already in CPHL.v's trusted base (it was added for [Uniform]'s closed
-  support), so nothing new is assumed here -- but this is the first place a
-  LAPLACE calculation needs it.  A [laplace_integral_closed_cdf] companion
-  to the two existing closed forms would remove the detour entirely.
+      { Pr[tt] = 1 }  ef_prog b  { Pr[e < t] = G }
 *)
 
 From Stdlib Require Import Reals.
@@ -68,6 +22,10 @@ From Stdlib Require Import Lra.
 From Stdlib Require Import ClassicalDescription.
 From Stdlib Require Import Classical.
 Require Import CPHL.
+Require Import MeasureIntegration CdfLibraryFacts.
+Require Import CPHLFacts.ConstructFacts CPHLFacts.CalculationFacts.
+Require Import CPHLFacts.ExponentialIntegrals.
+Require Import CdfAssertions.
 Require Import SampleBeforeLoop.
 Require Import PersistentSampleLoop.
 Require Import HalfLaplaceRejection.
@@ -101,16 +59,16 @@ Definition ef_out (t : R) : CFormula := <{ ef_e < t }>.
 Definition ef_src_lo (t : R) : CFormula := <{ $(ef_negate) < t }>.
 Definition ef_src_hi (t : R) : CFormula := <{ ef_x < t }>.
 
-(** Both halves carry the same mass -- that symmetry is the whole point of
-    folding. *)
-Definition ef_half (t b : R) : R := ((1 / 2) - (1 / 2) * exp (- t / b))%R.
+(** Both halves carry the same mass [(1 - r) / 2], where [r] is the
+    exponential survival probability at [t]. *)
+Definition ef_half (r : R) : R := (1 - r) / 2.
 
 (** * What the two branch regions are *)
 
 Lemma ef_sat_lo :
   forall (t z : R) (v : state),
     satisfies (update_real v ef_x z) <{ $(ef_src_lo t) /\ $(ef_sign) }> <->
-    ((- t < z)%R /\ (z < 0)%R).
+    (- t < z /\ z < 0).
 Proof.
   intros t z v.
   rewrite satisfies_c_and.
@@ -133,7 +91,7 @@ Lemma ef_sat_hi :
   forall (t z : R) (v : state),
     satisfies (update_real v ef_x z)
       <{ $(ef_src_hi t) /\ (~ $(ef_sign)) }> <->
-    ((0 <= z)%R /\ (z < t)%R).
+    (0 <= z < t).
 Proof.
   intros t z v.
   rewrite satisfies_c_and.
@@ -153,141 +111,135 @@ Proof.
     + intro Hf; exact (Hf Hge).
 Qed.
 
-(** * The two integrands
+(** * Laplace masses of the two halves *)
 
-    The else half is an exact difference of strict indicators.  The then
-    half needs the displaced atom described in the header. *)
-
-Lemma ef_indicator_hi :
-  forall (t z : R) (g : R -> R),
-    (0 <= t)%R ->
-    (g z * real_indicator ((0 <= z)%R /\ (z < t)%R))%R =
-    (g z * real_indicator (z < t)%R - g z * real_indicator (z < 0)%R)%R.
+(** The lower Laplace tail below [-t], by the proved exponential integral. *)
+Lemma ef_lap_below_neg :
+  forall b t : R, 0 < b -> 0 <= t ->
+    lap_below 0 b (- t) = (1 / 2) * exp (- t / b).
 Proof.
-  intros t z g Ht.
-  destruct (Rle_dec 0 z) as [Hge | Hlt].
-  - rewrite (real_indicator_false (z < 0)%R) by lra.
-    destruct (Rlt_dec z t) as [Hlt | Hge'].
-    + rewrite (real_indicator_true _ (conj Hge Hlt)).
-      rewrite (real_indicator_true (z < t)%R Hlt); ring.
-    + rewrite (real_indicator_false _) by (intro H; destruct H; lra).
-      rewrite (real_indicator_false (z < t)%R) by lra; ring.
-  - rewrite (real_indicator_true (z < 0)%R) by lra.
-    rewrite (real_indicator_false _) by (intro H; destruct H; lra).
-    rewrite (real_indicator_true (z < t)%R) by lra; ring.
+  intros b t Hb Ht.
+  unfold lap_below, lap_density.
+  transitivity
+    (real_integral (fun z => (1 / (2 * b)) * (real_indicator (z < - t) * exp (/ b * z)))).
+  - apply real_integral_extensional; intro z.
+    destruct (Rlt_dec z (- t)) as [Hz | Hz].
+    + rewrite !(real_indicator_true (z < - t)) by exact Hz.
+      rewrite Rminus_0_r, Rabs_left by lra.
+      replace (- - z / b) with (/ b * z) by (field; lra).
+      ring.
+    + rewrite !(real_indicator_false (z < - t)) by exact Hz; ring.
+  - rewrite real_integral_scale
+      by (apply real_integrable_exp_below; apply Rinv_0_lt_compat; exact Hb).
+    change (real_integral (fun z => real_indicator (z < - t) * exp (/ b * z)))
+      with (real_integral_below (- t) (fun z => exp (/ b * z))).
+    rewrite real_integral_exp_below_proved
+      by (apply Rinv_0_lt_compat; exact Hb).
+    replace (- t / b) with (/ b * - t) by (field; lra).
+    field; lra.
 Qed.
 
-Lemma ef_indicator_lo :
-  forall (t z : R) (g : R -> R),
-    (0 <= t)%R ->
-    (g z * real_indicator ((- t < z)%R /\ (z < 0)%R)
-     + real_indicator (z = - t)%R * (g z * real_indicator (z < 0)%R))%R =
-    (g z * real_indicator (z < 0)%R - g z * real_indicator (z < - t)%R)%R.
+Lemma ef_mass_hi :
+  forall b t : R, 0 < b -> 0 <= t ->
+    lap_window 0 b 0 t = ef_half (exp (- t / b)).
 Proof.
-  intros t z g Ht.
-  destruct (total_order_T z (- t)) as [ [Hlt | Heq] | Hgt].
-  - (* z < -t <= 0 : both sides vanish *)
-    rewrite (real_indicator_false _) by (intro H; destruct H; lra).
-    rewrite (real_indicator_false (z = - t)%R) by lra.
-    rewrite (real_indicator_true (z < 0)%R) by lra.
-    rewrite (real_indicator_true (z < - t)%R Hlt).
-    ring.
-  - (* z = -t : the atom carries the difference, whatever 1_{z<0} is *)
-    rewrite (real_indicator_false _) by (intro H; destruct H; lra).
-    rewrite (real_indicator_true (z = - t)%R Heq).
-    rewrite (real_indicator_false (z < - t)%R) by lra.
-    ring.
-  - (* -t < z : the left constraint is vacuous *)
-    rewrite (real_indicator_false (z = - t)%R) by lra.
-    rewrite (real_indicator_false (z < - t)%R) by lra.
-    rewrite (real_indicator_extensional _ (z < 0)%R)
-      by (split; [intro H; destruct H; assumption | intro H; split; lra]).
-    ring.
+  intros b t Hb Ht.
+  rewrite lap_window_above by assumption.
+  rewrite !lap_above_closed by (assumption || apply Rle_refl).
+  replace (- 0 / b) with 0 by (field; lra).
+  rewrite exp_0; unfold ef_half; field.
 Qed.
 
-(** * Evaluating the two integrals *)
-
-Lemma ef_laplace_cdf_neg :
-  forall t b : R,
-    (0 <= t)%R -> (0 < b)%R ->
-    laplace_cdf 0 b (- t) = ((1 / 2) * exp (- t / b))%R.
+Lemma ef_mass_lo :
+  forall b t : R, 0 < b -> 0 <= t ->
+    real_integral (fun z => lap_density 0 b z * real_indicator (- t < z /\ z < 0)) =
+    ef_half (exp (- t / b)).
 Proof.
-  intros t b Ht Hb.
-  unfold laplace_cdf.
-  destruct (Rle_dec (- t) 0) as [H | H]; [| lra].
-  replace ((- t - 0) / b)%R with (- t / b)%R by (field; lra).
-  reflexivity.
+  intros b t Hb Ht.
+  destruct (Req_dec t 0) as [Ht0 | Ht0].
+  - (* the region is empty *)
+    subst t.
+    replace (- 0 / b) with 0 by (field; lra).
+    rewrite exp_0; unfold ef_half.
+    replace ((1 - 1) / 2) with 0 by field.
+    transitivity (real_integral (fun _ : R => 0)); [| exact real_integral_zero].
+    apply real_integral_extensional; intro z.
+    rewrite (real_indicator_false (- 0 < z /\ z < 0)) by lra; ring.
+  - (* t > 0: the line splits into (-oo, -t], (-t, 0) and [0, +oo) *)
+    set (dens := lap_density 0 b).
+    set (f1 := fun z => dens z * real_indicator (z <= - t)).
+    set (f2 := fun z => dens z * real_indicator (0 <= z)).
+    set (g := fun z => dens z * real_indicator (- t < z /\ z < 0)).
+    assert (Hi1 : real_integrable f1)
+      by (apply (lap_masked_integrable 0 b Hb), real_measurable_atmost).
+    assert (Hi2 : real_integrable f2)
+      by (apply (lap_masked_integrable 0 b Hb), real_measurable_above).
+    assert (Hi12 : real_integrable (fun z => f1 z + f2 z))
+      by exact (@ConcreteMeasure.integrable_add _ RealIntegration.Space
+                  RealIntegration.lebesgue _ _ Hi1 Hi2).
+    assert (Hpt : forall z, g z + (f1 z + f2 z) = dens z).
+    { intro z; unfold g, f1, f2.
+      destruct (Rle_dec z (- t)) as [Hz | Hz].
+      - rewrite (real_indicator_false (- t < z /\ z < 0)) by lra.
+        rewrite (real_indicator_true (z <= - t)) by exact Hz.
+        rewrite (real_indicator_false (0 <= z)) by lra; ring.
+      - rewrite (real_indicator_false (z <= - t)) by exact Hz.
+        destruct (Rle_dec 0 z) as [H0 | H0].
+        + rewrite (real_indicator_false (- t < z /\ z < 0)) by lra.
+          rewrite (real_indicator_true (0 <= z)) by exact H0; ring.
+        + rewrite (real_indicator_true (- t < z /\ z < 0)) by lra.
+          rewrite (real_indicator_false (0 <= z)) by exact H0; ring. }
+    assert (Hig : real_integrable g).
+    { apply (real_integrable_ext (fun z => dens z + (-1) * (f1 z + f2 z))).
+      - intro z; rewrite <- (Hpt z); ring.
+      - exact (@ConcreteMeasure.integrable_add _ RealIntegration.Space
+                 RealIntegration.lebesgue _ _
+                 (lap_density_integrable 0 b Hb)
+                 (real_integrable_scale (-1) _ Hi12)). }
+    assert (Htot : real_integral g + (real_integral f1 + real_integral f2) = 1).
+    { rewrite <- real_integral_add by assumption.
+      rewrite <- real_integral_add by assumption.
+      rewrite <- (lap_density_total 0 b Hb).
+      apply real_integral_extensional; exact Hpt. }
+    change (real_integral f1) with (lap_atmost 0 b (- t)) in Htot.
+    change (real_integral f2) with (lap_above 0 b 0) in Htot.
+    rewrite lap_atmost_below, ef_lap_below_neg in Htot by assumption.
+    rewrite lap_above_closed in Htot by (assumption || apply Rle_refl).
+    replace (- 0 / b) with 0 in Htot by (field; lra).
+    rewrite exp_0 in Htot.
+    unfold ef_half; fold g; lra.
 Qed.
+
+(** * Evaluating the two sampled integrals *)
 
 Lemma ef_integral_hi :
   forall (t b : R) (v : state),
-    (0 <= t)%R -> (0 < b)%R ->
+    0 <= t -> 0 < b ->
     q_eval
       [[ integral ef_x ~ $(ef_noise b),
          indicator[$(ef_src_hi t) /\ (~ $(ef_sign))] ]] v =
-    ef_half t b.
+    ef_half (exp (- t / b)).
 Proof.
   intros t b v Ht Hb.
-  cbn [q_eval ef_noise distribution_density term_eval].
-  rewrite (real_integral_extensional
-             _ (fun z =>
-                  ((1 / (2 * b)) * exp (- Rabs (z - 0) / b)) *
-                    real_indicator (z < t)%R -
-                  ((1 / (2 * b)) * exp (- Rabs (z - 0) / b)) *
-                    real_indicator (z < 0)%R)).
-  - rewrite real_integral_minus.
-    rewrite !laplace_integral_strict_cdf by exact Hb.
-    rewrite laplace_cdf_centre by exact Hb.
-    pose proof (laplace_tail_centred t b Ht Hb) as Htail.
-    unfold ef_half; lra.
-  - intro z.
-    rewrite (real_indicator_extensional _ _ (ef_sat_hi t z v)).
-    exact (ef_indicator_hi t z
-             (fun w => (1 / (2 * b) * exp (- Rabs (w - 0) / b))%R) Ht).
+  unfold ef_noise.
+  rewrite (q_eval_laplace_indicator ef_x 0 b _ (fun z => 0 <= z < t) v Hb
+             (fun z => ef_sat_hi t z v)).
+  exact (ef_mass_hi b t Hb Ht).
 Qed.
 
 Lemma ef_integral_lo :
   forall (t b : R) (v : state),
-    (0 <= t)%R -> (0 < b)%R ->
+    0 <= t -> 0 < b ->
     q_eval
       [[ integral ef_x ~ $(ef_noise b),
          indicator[$(ef_src_lo t) /\ $(ef_sign)] ]] v =
-    ef_half t b.
+    ef_half (exp (- t / b)).
 Proof.
   intros t b v Ht Hb.
-  set (dens := fun z : R => ((1 / (2 * b)) * exp (- Rabs (z - 0) / b))%R).
-  set (region :=
-    fun z : R => (dens z * real_indicator ((- t < z)%R /\ (z < 0)%R))%R).
-  set (atom :=
-    fun z : R =>
-      (real_indicator (z = - t)%R * (dens z * real_indicator (z < 0)%R))%R).
-  (* First put the sample's integral into the [region] shape. *)
-  transitivity (real_integral region).
-  - cbn [q_eval ef_noise distribution_density term_eval].
-    apply real_integral_extensional; intro z.
-    unfold region, dens.
-    rewrite (real_indicator_extensional _ _ (ef_sat_lo t z v)).
-    reflexivity.
-  - (* The atom is null, and region-plus-atom is an exact CDF difference. *)
-    assert (Hatom : real_integral atom = 0%R).
-    { unfold atom; apply real_integral_singleton_zero. }
-    assert (Hsum :
-      (real_integral region + real_integral atom)%R = ef_half t b).
-    { rewrite <- real_integral_add.
-      transitivity
-        (real_integral
-           (fun z => (dens z * real_indicator (z < 0)%R -
-                      dens z * real_indicator (z < - t)%R)%R)).
-      - apply real_integral_extensional; intro z.
-        unfold region, atom.
-        exact (ef_indicator_lo t z dens Ht).
-      - rewrite real_integral_minus.
-        unfold dens.
-        rewrite !laplace_integral_strict_cdf by exact Hb.
-        rewrite laplace_cdf_centre by exact Hb.
-        rewrite ef_laplace_cdf_neg by assumption.
-        unfold ef_half; lra. }
-    lra.
+  unfold ef_noise.
+  rewrite (q_eval_laplace_indicator ef_x 0 b _ (fun z => - t < z /\ z < 0) v Hb
+             (fun z => ef_sat_lo t z v)).
+  exact (ef_mass_lo b t Hb Ht).
 Qed.
 
 (** * Program reasoning
@@ -406,43 +358,41 @@ Proof. reflexivity. Qed.
 
 Lemma ef_noise_valid_under :
   forall (b : R) (eta : PFormula),
-    (0 < b)%R ->
+    0 < b ->
     pformula_valid
       [[ $(eta) -> almost_sure[$(distribution_valid_formula (ef_noise b))] ]].
 Proof.
-  intros b eta Hb ps Hadm.
-  cbn [psatisfies]; intro Hignore.
-  clear Hignore; revert ps.
-  apply p_almost_sure_of_pointwise.
+  intros b eta Hb ps Hadm _.
+  refine (p_almost_sure_of_pointwise _ _ ps Hadm).
   intro v.
   unfold ef_noise.
   cbn [distribution_valid_formula c_lt c_not satisfies term_eval].
   intro Hle; lra.
 Qed.
 
-(** * The folded sampler *)
+(** * The folded sampler, for a given survival probability [r] *)
 
-Theorem ef_correct :
-  forall t b : R,
-    (0 <= t)%R -> (0 < b)%R ->
+Lemma ef_prog_rate :
+  forall t b r : R,
+    0 <= t -> 0 < b ->
+    exp (- t / b) = r ->
     {{ Pr[true] = 1 }}
       $(ef_prog b)
-    {{ Pr[$(ef_out t)] = $(1 - exp (- t / b)) }}.
+    {{ Pr[$(ef_out t)] = $(1 - r) }}.
 Proof.
-  intros t b Ht Hb.
+  intros t b r Ht Hb Hr.
   unfold ef_prog.
   set (P :=
     if_precondition
-      (svt_event_probability (ef_half t b) (ef_src_lo t))
-      (svt_event_probability (ef_half t b) (ef_src_hi t))
+      (svt_event_probability (ef_half r) (ef_src_lo t))
+      (svt_event_probability (ef_half r) (ef_src_hi t))
       (FProgBool ef_neg)).
   set (P2 := subst_bool_pformula ef_neg ef_sign P).
   eapply HConseq with
     (eta1 := sample_pformula ef_x (ef_noise b) P2)
-    (eta2 := svt_event_probability (ef_half t b + ef_half t b) (ef_out t)).
+    (eta2 := svt_event_probability (ef_half r + ef_half r) (ef_out t)).
   - (* the unit-mass precondition entails the sampled formula *)
-    intro ps.
-    intro Hadm.
+    intros ps Hadm.
     cbn [psatisfies]; intro Hpre.
     apply psatisfies_p_eq in Hpre.
     cbn [pterm_eval] in Hpre.
@@ -453,19 +403,18 @@ Proof.
     apply psatisfies_p_and; split; apply psatisfies_p_eq;
       cbn [pterm_eval].
     + symmetry; apply t3_expect_const; [exact Hpre |].
-      intro v; apply ef_integral_lo; assumption.
+      intro v; rewrite <- Hr; apply ef_integral_lo; assumption.
     + symmetry; apply t3_expect_const; [exact Hpre |].
-      intro v; apply ef_integral_hi; assumption.
+      intro v; rewrite <- Hr; apply ef_integral_hi; assumption.
   - eapply HSeq with (eta2 := P2).
     + apply HRealSample.
-      * intro ps; cbn [psatisfies]; intro H; exact H.
+      * intros ps Hadm; cbn [psatisfies]; intro H; exact H.
       * apply ef_noise_valid_under; exact Hb.
     + eapply HSeq with (eta2 := P).
       * unfold P2; apply HBoolAssign.
       * unfold P; apply ef_if_step.
-  - (* both halves carry the same mass, and they sum to the Exp CDF *)
-    intro ps.
-    intro Hadm.
+  - (* both halves carry the same mass, and they sum to [1 - r] *)
+    intros ps Hadm.
     unfold svt_event_probability.
     intro Hpost.
     apply psatisfies_p_eq in Hpost.
@@ -474,4 +423,21 @@ Proof.
     cbn [pterm_eval].
     unfold ef_half in Hpost.
     lra.
+Qed.
+
+(** * The headline triple *)
+
+Theorem ef_correct :
+  forall t b G : R,
+    0 <= t -> 0 < b ->
+    pformula_valid (t3_cdf t b G) ->
+    {{ Pr[true] = 1 }}
+      $(ef_prog b)
+    {{ Pr[$(ef_out t)] = $(G) }}.
+Proof.
+  intros t b G Ht Hb Hvalid.
+  pose proof (t3_cdf_value t b G Ht Hb Hvalid) as HG.
+  replace G with (1 - (1 - G))%R by ring.
+  apply ef_prog_rate; [exact Ht | exact Hb |].
+  rewrite HG; ring.
 Qed.

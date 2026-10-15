@@ -1,57 +1,14 @@
 (**
-  GaussianDifference.v -- the difference of two independent normals IS
-  normal, in contrast with the Laplace case.
+  GaussianDifference.v
 
-  NO TRIPLE.  This file proves an analytic identity about [real_integral],
-  not a Hoare triple -- the same role UniformConstructions/UniformAxiomsAdditional.v
-  and PrivatePointInDisk/LaplaceConvolution.v play.  It does define a
-  program ([gc_two_sample]) and state the triple-level fact one would want
-  about it ([gc_program_target]), but that is deliberately NOT proved: see
-  the bottom of the file and flags/FLAGS.md F15.
-
-  THE RESULT ([gc_difference], for [0 < s1], [0 < s2], [0 < s] and
-  [s*s = s1*s1 + s2*s2]):
-
-      INT  phi_{m1,s1}(u) * phi_{m2,s2}(u - z)  du  =  phi_{m1-m2, s}(z)
-
-  where [phi_{m,s}] is the normal density CPHL.v already uses for
-  [Gaussian].  So [X - Y] for independent [X ~ N(m1,s1)], [Y ~ N(m2,s2)] is
-  exactly [N(m1-m2, sqrt(s1^2+s2^2))] -- same family, combined parameters.
-
-  THE CONTRAST.  For Laplace the analogous statement is FALSE:
-  PrivatePointInDisk/LaplaceConvolution.v proves the difference of two
-  Laplace(0,b) has density [(1/4b)(1+|w|/b)exp(-|w|/b)], and
-  [lc_difference_not_laplace] proves no Laplace density matches it.  The
-  normal family is closed under differences; the Laplace family is not.
-  That is the whole point of this file.
-
-  ONE NEW AXIOM, and it is true.  [CPHL.v] has the [Gaussian] constructor
-  and its density but NO analytic law for it -- there is nothing to evaluate
-  a normal integral with.  This file adds exactly the normalisation law
-
-      INT exp( -(u-m)^2 / (2v) ) du  =  sqrt(2 * PI * v)      (v > 0)
-
-  which is the standard Gauss integral: a closed-form evaluation of one
-  specific family, the same style as CPHL.v's [real_integral_exp_below] and
-  friends.  Kept here rather than in CPHL.v, as with
-  UniformConstructions/UniformAxiomsAdditional.v.
-
-  WHAT IS *NOT* PROVED, AND WHY.  The corresponding statement about a
-  PROGRAM -- that
-
-      x sample gaussian(m1,s1);  y sample gaussian(m2,s2);  d := x - y
-
-  has the same weakest precondition as the single sample
-  [d sample gaussian(m1-m2, s)] -- is stated below as [gc_program_target]
-  and is NOT proved.  It is blocked by flags/FLAGS.md F15: collapsing the
-  two nested [QIntegral]s into one needs Fubini and translation invariance,
-  which [real_integral] does not have.
-
-  That makes this file a sharper witness for F15 than the disk variant of
-  F14.  There, one could object that the underlying value does not exist in
-  closed form.  Here the mathematics is a clean closed form, fully proved
-  below -- and CPHL still cannot lift it to the program.  The integral
-  theory is the only thing in the way.
+  Programs ([gc_two_sample m1 s1 m2 s2], [gc_one_sample m s]):
+      gc_x <- sample(gaussian(m1, s1)); gc_y <- sample(gaussian(m2, s2)); gc_d := gc_x + -1 * gc_y
+      gc_d <- sample(gaussian(m, s))
+  Triple: none proved.  Unproved target [gc_program_target] (equal weakest
+  preconditions for the event gc_d < t, with m = m1 - m2 and s * s = s1 * s1 + s2 * s2):
+      E[ integral gc_x ~ gaussian(m1, s1), integral gc_y ~ gaussian(m2, s2),
+         indicator[gc_x + -1 * gc_y < t] ]
+        = E[ integral gc_d ~ gaussian(m1 - m2, s), indicator[gc_d < t] ]
 *)
 
 From Stdlib Require Import Reals.
@@ -59,6 +16,7 @@ From Stdlib Require Import Strings.String.
 From Stdlib Require Import Lra.
 From Stdlib Require Import ClassicalDescription.
 Require Import CPHL.
+Require Import CPHLFacts.DistributionFacts CPHLFacts.CalculationFacts.
 
 Open Scope R_scope.
 Open Scope string_scope.
@@ -77,16 +35,66 @@ Lemma gc_density_is_gaussian :
     distribution_density (Gaussian (TConst m) (TConst s)) v z.
 Proof. intros; reflexivity. Qed.
 
-(** * The added law: the Gauss integral
+(** * The Gauss integral (proved from the normalisation of the Gaussian density)
 
     Parameterised by the VARIANCE [v], which keeps every square root out of
     the algebra below. *)
 
-Axiom real_integral_gaussian_kernel :
+Lemma gc_kernel_as_density :
+  forall m v u : R,
+    (0 < v)%R ->
+    exp (- ((u - m) * (u - m)) / (2 * v)) =
+    (sqrt v * sqrt (2 * PI) *
+     distribution_density (Gaussian (TConst m) (TConst (sqrt v))) demo_valuation u)%R.
+Proof.
+  intros m v u Hv.
+  assert (Hs : (0 < sqrt v)%R) by (apply sqrt_lt_R0; exact Hv).
+  assert (Hpi : (0 < sqrt (2 * PI))%R)
+    by (apply sqrt_lt_R0; generalize PI_RGT_0; lra).
+  unfold distribution_density; cbn [term_eval].
+  pattern v at 1; rewrite <- (sqrt_sqrt v) by lra.
+  replace (2 * (sqrt v * sqrt v))%R with (2 * sqrt v * sqrt v)%R by ring.
+  field; split; lra.
+Qed.
+
+Lemma gc_gaussian_valid :
+  forall m v : R, (0 < v)%R ->
+    distribution_valid (Gaussian (TConst m) (TConst (sqrt v))) demo_valuation.
+Proof. intros m v Hv; apply sqrt_lt_R0; exact Hv. Qed.
+
+Lemma real_integrable_gaussian_kernel :
+  forall m v : R,
+    (0 < v)%R ->
+    real_integrable (fun u => exp (- ((u - m) * (u - m)) / (2 * v))).
+Proof.
+  intros m v Hv.
+  apply (real_integrable_ext
+           (fun u => sqrt v * sqrt (2 * PI) *
+              distribution_density (Gaussian (TConst m) (TConst (sqrt v)))
+                demo_valuation u)%R).
+  - intro u; symmetry; apply gc_kernel_as_density; exact Hv.
+  - apply real_integrable_scale.
+    exact (distribution_density_integrable (gc_gaussian_valid m v Hv)).
+Qed.
+
+Lemma real_integral_gaussian_kernel :
   forall m v : R,
     (0 < v)%R ->
     real_integral (fun u => exp (- ((u - m) * (u - m)) / (2 * v))) =
     sqrt (2 * PI * v).
+Proof.
+  intros m v Hv.
+  rewrite (real_integral_extensional _
+             (fun u => sqrt v * sqrt (2 * PI) *
+                distribution_density (Gaussian (TConst m) (TConst (sqrt v)))
+                  demo_valuation u)%R)
+    by (intro u; apply gc_kernel_as_density; exact Hv).
+  rewrite real_integral_scale
+    by exact (distribution_density_integrable (gc_gaussian_valid m v Hv)).
+  rewrite (real_integral_distribution_density (gc_gaussian_valid m v Hv)).
+  rewrite (sqrt_mult_alt (2 * PI) v) by (generalize PI_RGT_0; lra).
+  change (sqrt v * sqrt (2 * PI) * 1 = sqrt (2 * PI) * sqrt v)%R; ring.
+Qed.
 
 (** * Two small facts *)
 
@@ -170,7 +178,8 @@ Proof.
                   * exp (- ((u - (m1 + (z - m2 - m1) * (s1 * s1) / (s * s)))
                             * (u - (m1 + (z - m2 - m1) * (s1 * s1) / (s * s))))
                          / (2 * (s1 * s1 * (s2 * s2) / (s * s)))))).
-  - rewrite real_integral_scale.
+  - rewrite real_integral_scale
+      by (apply real_integrable_gaussian_kernel; exact Hvr).
     rewrite (real_integral_gaussian_kernel
                (m1 + (z - m2 - m1) * (s1 * s1) / (s * s))
                (s1 * s1 * (s2 * s2) / (s * s)) Hvr).
@@ -282,37 +291,14 @@ Definition gc_program_target (m1 s1 m2 s2 s t : R) : Prop :=
     q_eval (gc_two_wp m1 s1 m2 s2 t) v = q_eval (gc_one_wp (m1 - m2) s t) v.
 
 (**
-  WHY IT IS NOT PROVED.
-
-  Unfolding, [gc_program_target] asks for
+  WHY IT IS NOT PROVED.  Unfolding, [gc_program_target] asks for
 
       INT phi_{m1,s1}(u) [ INT phi_{m2,s2}(w) H(u - w) dw ] du
         =  INT phi_{m1-m2,s}(k) H(k) dk
 
-  for the indicator [H] of [. < t].  Getting from the left to the right
-  means substituting [w = u - k] in the inner integral and then exchanging
-  the order of integration -- change of variables plus Fubini.
-  [CPHL.real_integral] has neither; its whole structural toolkit is
-  extensionality, additivity, scaling and a handful of closed forms.  That
-  is flags/FLAGS.md F15.
-
-  Note what is and is not missing.  The ANALYTIC content is fully proved
-  above: [gc_difference] is exactly the inner-integral collapse, in closed
-  form, with no approximation.  What is missing is only the right to
-  reorganise the nested integrals so that it can be applied.
-
-  This makes the file a sharper witness for F15 than the disk variant in
-  PrivatePointInDisk/TODO/FourNoiseDisk.v.  There one can object that the
-  target value does not exist in elementary closed form, so the integral
-  theory was never going to finish the job.  Here the value is a clean
-  Gaussian density, proved, and CPHL still cannot lift it to the program.
-  The missing structural laws are the only obstruction.
-
-  THE CONTRAST WITH LAPLACE, restated.  For the normal family the density
-  collapse succeeds and stays in the family ([gc_difference]).  For Laplace
-  it succeeds but LEAVES the family: the difference has density
-  [(1/4b)(1+|w|/b)exp(-|w|/b)], and
-  PrivatePointInDisk/LaplaceConvolution.v's [lc_difference_not_laplace]
-  proves no Laplace density matches it.  Both facts are about the analytic
-  layer; neither can currently be transported to a program.
+  for the indicator [H] of [. < t].  This needs a translation change of
+  variables in the inner integral and Fubini for the product of the two
+  kernel measures; [gc_difference] above is exactly the resulting density
+  identity, but the measure-theoretic reorganisation of the nested kernel
+  integrals has not been carried out in this development.
 *)

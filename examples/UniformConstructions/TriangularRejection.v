@@ -1,54 +1,23 @@
 (**
-  TriangularRejection.v -- von Neumann rejection under a NON-constant
-  envelope, giving the triangular law.
+  TriangularRejection.v
 
-      retry := tt;
-      while retry do
-        x     <- sample(Uniform(0,1));
-        y     <- sample(Uniform(0,1));
-        retry := (x <= y)                (* accept iff y < x *)
+  Program ([ta_prog]):
+      ta_retry := tt;
+      while ta_retry do
+        ta_x <- sample(uniform(0, 1));
+        ta_y <- sample(uniform(0, 1));
+        ta_retry := (ta_x <= ta_y)
       end
-
-  THE TRIPLE ([ta_correct], for [0 < t <= 1]):
-
-      { E[1_tt] = w }
-          ta_prog
-      { Pr[x < t  /\  ~retry]  =  t * t * w }
-
-  The accepted [x] has density [2x] on [0,1] -- the triangular law, i.e.
-  Beta(2,1), equivalently the maximum of two independent uniforms.  The
-  loop equation is
-
-      s = (1/2) * s + t*t/2,      so   s = t*t.
-
-  WHAT IS NEW HERE.  Every earlier example has an accept condition that
-  FACTORS into an x-part and a y-part, so the inner integral collapses to a
-  constant.  Here it does not: [y < x] couples the two draws, and the inner
-  integral over [y] returns [uniform_cdf 0 1 k] -- a FUNCTION of the outer
-  variable.  The outer integral is then a genuine polynomial integral,
-  which is what [real_integral_between_linear] supplies.
-
-  This is exactly von Neumann's rejection method (1951) with a polynomial
-  envelope, and it is the whole class this framework can reach from uniform
-  draws: the accept region's sections must be intervals whose endpoints are
-  polynomial in the outer variable.  Marsaglia's polar sampler fails not
-  because it is two-dimensional -- its sections are intervals too -- but
-  because their length [2*sqrt(1-k^2)] is not a polynomial.
-
-  THE BOUNDARY.  [0 < t] is required strictly.  At [t = 0] the answer is 0,
-  but [while_progress] demands positive TARGET exit mass and [t*t/2]
-  vanishes there.  Third independent witness to that defect, after
-  TruncatedLaplaceRejection.v ([t = a]) and the zero-probability regions
-  discussed in NoisyThresholdMonitor.v.
+  Triple ([ta_correct], for 0 < t <= 1; q = [ta_q t]):
+      { E[1_tt] = ta_w }  ta_prog  { E[1_(ta_x < t /\ ~ta_retry)] = t * t * ta_w }
 *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Strings.String.
 From Stdlib Require Import Lra.
 From Stdlib Require Import Lia.
-From Stdlib Require Import ClassicalDescription.
-From Stdlib Require Import Classical.
 Require Import CPHL.
+Require Import CPHLFacts.CalculationFacts.
 Require Import SampleBeforeLoop.
 Require Import PersistentSampleLoop.
 Require Import HalfLaplaceRejection.
@@ -160,68 +129,61 @@ Qed.
 
 (** * The inner integral returns a FUNCTION of the outer variable *)
 
-Lemma ta_density_eq :
-  forall (v : state) (z : R),
-    distribution_density ta_unit v z = uniform_density_R 0 1 z.
-Proof. reflexivity. Qed.
-
-Lemma uniform_cdf_unit_inside :
-  forall k : R, (0 <= k)%R -> (k < 1)%R -> uniform_cdf 0 1 k = k.
-Proof.
-  intros k H0 H1.
-  unfold uniform_cdf.
-  destruct (Rle_dec k 0) as [H | H].
-  - assert (Hk : k = 0%R) by lra; subst k; reflexivity.
-  - destruct (Rle_dec 1 k) as [H' | H']; [lra | field].
-Qed.
-
-Lemma uniform_cdf_unit_top : uniform_cdf 0 1 1 = 1%R.
-Proof.
-  unfold uniform_cdf.
-  destruct (Rle_dec 1 0) as [H | H]; [lra |].
-  destruct (Rle_dec 1 1) as [H' | H']; [reflexivity | lra].
-Qed.
-
 Lemma ta_inner_reject :
   forall (v : state) (k : R),
+    (0 <= k <= 1)%R ->
     q_eval [[ integral ta_y ~ $(ta_unit), indicator[$(ta_reject)] ]]
-      (update_real v ta_x k) = (1 - uniform_cdf 0 1 k)%R.
+      (update_real v ta_x k) = (1 - k)%R.
 Proof.
-  intros v k.
-  rewrite q_eval_integral.
-  transitivity
-    (real_integral
-       (fun m => uniform_density_R 0 1 m * real_indicator (k <= m)%R)).
-  - apply real_integral_extensional; intro m.
-    rewrite ta_density_eq.
-    cbn [q_eval].
-    rewrite ta_indicator_reject.
-    reflexivity.
-  - apply uniform_integral_survival; lra.
+  intros v k Hk.
+  unfold ta_unit; rewrite q_eval_unit_uniform.
+  rewrite (real_integral_extensional _
+             (fun m => real_indicator (k <= m <= 1)%R * 1)).
+  - rewrite real_integral_closed_const by lra; ring.
+  - intro m; rewrite q_eval_indicatorE, ta_indicator_reject.
+    destruct (Rle_dec k m) as [Hm | Hm].
+    + rewrite (real_indicator_true (k <= m)%R Hm).
+      destruct (Rle_dec m 1) as [Hm1 | Hm1].
+      * rewrite (real_indicator_true (0 <= m <= 1)%R) by lra.
+        rewrite (real_indicator_true (k <= m <= 1)%R) by lra; ring.
+      * rewrite (real_indicator_false (0 <= m <= 1)%R) by lra.
+        rewrite (real_indicator_false (k <= m <= 1)%R) by lra; ring.
+    + rewrite (real_indicator_false (k <= m)%R Hm).
+      rewrite (real_indicator_false (k <= m <= 1)%R) by lra; ring.
 Qed.
 
 Lemma ta_inner_accept :
   forall (t : R) (v : state) (k : R),
+    (0 <= k <= 1)%R ->
     q_eval
       [[ integral ta_y ~ $(ta_unit),
          indicator[$(ta_below t) /\ (~ $(ta_reject))] ]]
       (update_real v ta_x k) =
-    (real_indicator (k < t)%R * uniform_cdf 0 1 k)%R.
+    (real_indicator (k < t)%R * k)%R.
 Proof.
-  intros t v k.
-  rewrite q_eval_integral.
-  transitivity
-    (real_indicator (k < t)%R *
-     real_integral
-       (fun m => uniform_density_R 0 1 m * real_indicator (m < k)%R))%R.
-  - rewrite <- real_integral_scale.
-    apply real_integral_extensional; intro m.
-    rewrite ta_density_eq.
-    cbn [q_eval].
-    rewrite ta_indicator_accept.
-    ring.
-  - rewrite uniform_integral_strict_cdf by lra.
-    reflexivity.
+  intros t v k Hk.
+  unfold ta_unit; rewrite q_eval_unit_uniform.
+  destruct (Rlt_dec k t) as [Hkt | Hkt].
+  - rewrite (real_indicator_true _ Hkt).
+    rewrite (real_integral_extensional _
+               (fun m => real_indicator (0 <= m < k)%R * 1)).
+    + rewrite real_integral_open_const by lra; ring.
+    + intro m; rewrite q_eval_indicatorE, ta_indicator_accept,
+        (real_indicator_true (k < t)%R Hkt).
+      destruct (Rlt_dec m k) as [Hm | Hm].
+      * rewrite (real_indicator_true (m < k)%R Hm).
+        destruct (Rle_dec 0 m) as [Hm0 | Hm0].
+        -- rewrite (real_indicator_true (0 <= m <= 1)%R) by lra.
+           rewrite (real_indicator_true (0 <= m < k)%R) by lra; ring.
+        -- rewrite (real_indicator_false (0 <= m <= 1)%R) by lra.
+           rewrite (real_indicator_false (0 <= m < k)%R) by lra; ring.
+      * rewrite (real_indicator_false (m < k)%R Hm).
+        rewrite (real_indicator_false (0 <= m < k)%R) by lra; ring.
+  - rewrite (real_indicator_false _ Hkt).
+    rewrite (real_integral_extensional _ (fun _ => 0%R)).
+    + rewrite real_integral_zero; ring.
+    + intro m; rewrite q_eval_indicatorE, ta_indicator_accept,
+        (real_indicator_false (k < t)%R Hkt); ring.
 Qed.
 
 (** * The outer integral is a genuine polynomial integral *)
@@ -235,38 +197,24 @@ Lemma ta_qeval_reject :
       v = (1 / 2)%R.
 Proof.
   intro v.
-  rewrite q_eval_integral.
-  transitivity
-    (real_integral
-       (fun k =>
-          (real_indicator (0 <= k < 1)%R -
-           real_indicator (0 <= k < 1)%R * k)%R)).
-  - apply real_integral_extensional; intro k.
-    rewrite ta_density_eq, ta_inner_reject.
-    unfold uniform_density_R.
-    destruct (Rlt_dec k 0) as [Hlo | Hlo].
-    + rewrite (real_indicator_false (0 <= k <= 1)%R) by (intros [H1 H2]; lra).
-      rewrite (real_indicator_false (0 <= k < 1)%R) by (intros [H1 H2]; lra).
-      unfold Rdiv; ring.
-    + destruct (Rlt_dec k 1) as [Hhi | Hhi].
+  unfold ta_unit at 1; rewrite q_eval_unit_uniform.
+  rewrite (real_integral_extensional _
+             (fun k => real_indicator (0 <= k < 1)%R * (1 + (-1) * k))).
+  - rewrite real_integral_open_affine by lra; field.
+  - intro k.
+    destruct (Rle_dec 0 k) as [H0 | H0].
+    + destruct (Rlt_dec k 1) as [H1 | H1].
       * rewrite (real_indicator_true (0 <= k <= 1)%R) by lra.
         rewrite (real_indicator_true (0 <= k < 1)%R) by lra.
-        rewrite uniform_cdf_unit_inside by lra.
-        field.
-      * rewrite (real_indicator_false (0 <= k < 1)%R)
-          by (intros [H1 H2]; lra).
-        destruct (Rle_dec k 1) as [Heq | Hgt].
+        fold ta_unit; rewrite ta_inner_reject by lra; ring.
+      * rewrite (real_indicator_false (0 <= k < 1)%R) by lra.
+        destruct (Rle_dec k 1) as [H2 | H2].
         -- assert (Hk : k = 1%R) by lra; subst k.
            rewrite (real_indicator_true (0 <= 1 <= 1)%R) by lra.
-           rewrite uniform_cdf_unit_top.
-           unfold Rdiv; ring.
-        -- rewrite (real_indicator_false (0 <= k <= 1)%R)
-             by (intros [H1 H2]; lra).
-           unfold Rdiv; ring.
-  - rewrite real_integral_minus.
-    rewrite (real_integral_indicator_interval 0 1) by lra.
-    rewrite (real_integral_indicator_linear 0 1) by lra.
-    lra.
+           fold ta_unit; rewrite ta_inner_reject by lra; ring.
+        -- rewrite (real_indicator_false (0 <= k <= 1)%R) by lra; ring.
+    + rewrite (real_indicator_false (0 <= k <= 1)%R) by lra.
+      rewrite (real_indicator_false (0 <= k < 1)%R) by lra; ring.
 Qed.
 
 Lemma ta_qeval_accept :
@@ -279,28 +227,24 @@ Lemma ta_qeval_accept :
     (t * t / 2)%R.
 Proof.
   intros t v H0 H1.
-  rewrite q_eval_integral.
-  transitivity
-    (real_integral (fun k => real_indicator (0 <= k < t)%R * k)).
-  - apply real_integral_extensional; intro k.
-    rewrite ta_density_eq, (ta_inner_accept t).
-    unfold uniform_density_R.
-    destruct (Rlt_dec k 0) as [Hlo | Hlo].
-    + rewrite (real_indicator_false (0 <= k <= 1)%R) by (intros [Ha Hb]; lra).
-      rewrite (real_indicator_false (0 <= k < t)%R) by (intros [Ha Hb]; lra).
-      unfold Rdiv; ring.
-    + destruct (Rlt_dec k t) as [Hkt | Hkt].
-      * rewrite (real_indicator_true (k < t)%R Hkt).
-        rewrite (real_indicator_true (0 <= k <= 1)%R) by lra.
-        rewrite (real_indicator_true (0 <= k < t)%R) by lra.
-        rewrite uniform_cdf_unit_inside by lra.
-        field.
-      * rewrite (real_indicator_false (k < t)%R) by lra.
-        rewrite (real_indicator_false (0 <= k < t)%R)
-          by (intros [Ha Hb]; lra).
-        unfold Rdiv; ring.
-  - rewrite (real_integral_indicator_linear 0 t) by lra.
-    field.
+  unfold ta_unit at 1; rewrite q_eval_unit_uniform.
+  rewrite (real_integral_extensional _
+             (fun k => real_indicator (0 <= k < t)%R * k)).
+  - rewrite real_integral_indicator_linear by lra; field.
+  - intro k.
+    destruct (Rle_dec 0 k) as [Hk0 | Hk0].
+    + destruct (Rle_dec k 1) as [Hk1 | Hk1].
+      * rewrite (real_indicator_true (0 <= k <= 1)%R) by lra.
+        fold ta_unit; rewrite (ta_inner_accept t) by lra.
+        destruct (Rlt_dec k t) as [Hkt | Hkt].
+        -- rewrite (real_indicator_true (k < t)%R Hkt).
+           rewrite (real_indicator_true (0 <= k < t)%R) by lra; ring.
+        -- rewrite (real_indicator_false (k < t)%R Hkt).
+           rewrite (real_indicator_false (0 <= k < t)%R) by lra; ring.
+      * rewrite (real_indicator_false (0 <= k <= 1)%R) by lra.
+        rewrite (real_indicator_false (0 <= k < t)%R) by lra; ring.
+    + rewrite (real_indicator_false (0 <= k <= 1)%R) by lra.
+      rewrite (real_indicator_false (0 <= k < t)%R) by lra; ring.
 Qed.
 
 (** * Certificate data
@@ -319,10 +263,8 @@ Lemma ta_unit_valid_under :
     pformula_valid
       [[ $(pre) -> almost_sure[$(distribution_valid_formula ta_unit)] ]].
 Proof.
-  intros pre ps Hadm.
-  cbn [psatisfies]; intro Hignore.
-  clear Hignore; revert ps.
-  apply p_almost_sure_of_pointwise.
+  intros pre ps Hadm _.
+  refine (p_almost_sure_of_pointwise _ _ ps Hadm).
   intro v.
   unfold ta_unit.
   cbn [distribution_valid_formula c_lt c_not satisfies term_eval].
@@ -348,8 +290,7 @@ Proof.
             (while_body_post 1 ta_regions (ta_transitions i) ta_guard
                (ta_q t) (ta_exits t i)))).
   - apply HRealSample; [| apply ta_unit_valid_under].
-    intro ps.
-    intro Hadm.
+    intros ps Hadm.
     cbn [psatisfies].
     intro Hpre.
     apply psatisfies_p_and in Hpre.
@@ -365,13 +306,15 @@ Proof.
     apply psatisfies_p_and; split; [apply psatisfies_p_and; split | ].
     + apply psatisfies_p_true.
     + apply psatisfies_p_eq.
-      cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula
+      cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
+           pconstruct_size subst_bool_cformula
            sample_pterm pterm_eval].
       rewrite !bpv_eq_dec_refl.
       rewrite (t3_expect_const ps _ (1 / 2)%R Hmass);
         [reflexivity | intro v; apply ta_qeval_reject].
     + apply psatisfies_p_eq.
-      cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula
+      cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
+           pconstruct_size subst_bool_cformula
            ta_below c_and c_not c_lt sample_pterm pterm_eval].
       rewrite !bpv_eq_dec_refl.
       rewrite (t3_expect_const ps _ (t * t / 2)%R Hmass);
@@ -382,7 +325,7 @@ Proof.
            (while_body_post 1 ta_regions (ta_transitions i) ta_guard
               (ta_q t) (ta_exits t i))).
     + apply HRealSample; [| apply ta_unit_valid_under].
-      intro ps; cbn [psatisfies]; intro H; exact H.
+      intros ps Hadm; cbn [psatisfies]; intro H; exact H.
     + apply HBoolAssign.
 Qed.
 
@@ -438,8 +381,7 @@ Proof.
          subst_bool_pformula ta_retry c_true
            (p_concentrated_mass (ta_regions 0) (PVar ta_w)))
       (eta2 := p_concentrated_mass (ta_regions 0) (PVar ta_w)).
-    + intro ps.
-    + intro Hadm.
+    + intros ps Hadm.
       cbn [psatisfies].
       intro Hpre.
       apply psatisfies_p_eq in Hpre.
@@ -447,12 +389,13 @@ Proof.
       unfold p_concentrated_mass, ta_regions, ta_guard.
       rewrite subst_bool_pformula_p_and, !subst_bool_pformula_p_eq.
       apply psatisfies_p_and; split; apply psatisfies_p_eq;
-        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula
+        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
+           pconstruct_size subst_bool_cformula
              pterm_eval].
       * rewrite !bpv_eq_dec_refl; reflexivity.
       * exact Hpre.
     + apply HBoolAssign.
-    + intro ps; cbn [psatisfies]; tauto.
+    + intros ps Hadm; cbn [psatisfies]; tauto.
   - replace (t * t)%R with (ta_solution t 0) by reflexivity.
     apply ta_loop_derivable; assumption.
 Qed.

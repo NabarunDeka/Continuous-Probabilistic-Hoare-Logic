@@ -1,45 +1,26 @@
 (**
-  OneDimDistance.v -- the ONE-DIMENSIONAL private membership test, with the
-  noise applied to the DIFFERENCE.
+  OneDimDistance.v
 
-      e      := p - c;
-      n      <- sample(Laplace(0, b));
-      e      := e + n;
-      inside := (-1 <= e  /\  e < 1)
-
-  THE TRIPLE ([od_correct], for [0 < b], writing [D] for the true difference
-  [p - c]):
-
-      { Pr[tt] = 1 }
-          od_prog p c b
-      { Pr[inside] = laplace_cdf 0 b (1 - D) - laplace_cdf 0 b (-1 - D) }
-
-  WHY THIS FILE EXISTS.  In one dimension "inside the unit ball" is the
-  INTERVAL [-1 <= x < 1], not a disk.  An interval has CONSTANT endpoints,
-  so the reachability criterion of UniformConstructions/TriangularRejection.v
-  -- sections must be intervals with polynomial endpoints -- is satisfied
-  trivially, and no square root ever appears.  This is the 1-D counterpart of
-  PointInDiskAdditive.v and is the easy half of the pair; the interesting
-  half is OneDimPoints.v, which perturbs the two points separately.
-
-  Together the two files isolate what actually blocks the two-dimensional
-  four-noise variant: it is the DISK, not the double perturbation.  See
-  flags/FLAGS.md F14.
-
-  The window is half-open ([-1 <= e < 1]) to match CPHL.v's strict-CDF closed
-  form, which is the only endpoint convention available (F6).  Under
-  continuous noise the endpoints carry no mass, so this agrees with the
-  closed test.
+  Program ([od_prog p c b]):
+      e := p - c;
+      n <- sample(laplace(0, b));
+      e := e + n;
+      inside := (-1 <= e /\ e < 1)
+  Triple ([od_correct], for 0 < b; post [od_post], D := [od_diff p c]):
+      { Pr[true] = 1 }
+        od_prog p c b
+      { Pr[inside] = E[ integral z ~ laplace(0, b), indicator[z <= 1 - D] ]
+                     - E[ integral z ~ laplace(0, b), indicator[z <= -1 - D] ] }
 *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Strings.String.
 From Stdlib Require Import Lra.
-From Stdlib Require Import ClassicalDescription.
 From Stdlib Require Import Classical.
 Require Import CPHL.
 Require Import SampleBeforeLoop.
-Require Import HalfLaplaceRejection.
+Require Import CdfAssertions.
+Require Import DiskLaplaceFacts.
 
 Open Scope R_scope.
 Open Scope string_scope.
@@ -48,11 +29,12 @@ Local Open Scope cphl_hoare_scope.
 
 (** * The program
 
-    [p] and [c] are Rocq reals, so [od_diff] is a CLOSED term -- the same
-    device as in PointInDiskAdditive.v, and for the same reason. *)
+    [p] and [c] are Rocq reals, so [od_diff] is a closed term in the
+    parameters. *)
 
 Definition od_e : RealProgramVar := real_program_var "od_e".
 Definition od_n : RealProgramVar := real_program_var "od_n".
+Definition od_z : RealProgramVar := real_program_var "od_z".
 Definition od_inside : BoolProgramVar := bool_program_var "od_inside".
 
 Definition od_minus_one : Term := TConst (-1).
@@ -74,22 +56,23 @@ Definition od_prog (p c b : R) : Cmd :=
      od_e      := $(od_shift);
      od_inside b= $(od_window) }>.
 
-(** The answer: the Laplace mass of the window, recentred on [D]. *)
-Definition od_answer (p c b : R) : R :=
-  (laplace_cdf 0 b (1 - od_D p c) - laplace_cdf 0 b (-1 - od_D p c))%R.
+(** * The postcondition: the Laplace mass of the window, as two syntactic
+    CDFs at the cutoffs [1 - D] and [-1 - D]. *)
 
-(** * Two small analytic facts *)
+Definition od_hi (p c : R) : Term := <{ 1 + $(od_minus_one) * $(od_diff p c) }>.
+Definition od_lo (p c : R) : Term :=
+  <{ $(od_minus_one) + $(od_minus_one) * $(od_diff p c) }>.
 
-Lemma od_integral_minus :
-  forall f g : R -> R,
-    real_integral (fun x => (f x - g x)%R) =
-    (real_integral f - real_integral g)%R.
-Proof.
-  intros f g.
-  transitivity (real_integral (fun x => (f x + (-1) * g x)%R)).
-  - apply real_integral_extensional; intro x; ring.
-  - rewrite real_integral_add, real_integral_scale; ring.
-Qed.
+Definition od_cdf (p c b : R) (cut : Term) : PConstruct :=
+  [[ integral od_z ~ $(od_noise b), indicator[od_z <= $(cut)] ]].
+
+Definition od_answer (p c b : R) : Pterm :=
+  p_sub (PExpect (od_cdf p c b (od_hi p c))) (PExpect (od_cdf p c b (od_lo p c))).
+
+Definition od_post (p c b : R) : PFormula :=
+  [[ Pr[od_inside] = $(od_answer p c b) ]].
+
+(** * Small facts *)
 
 (** A half-open window is the difference of two half-lines. *)
 Lemma od_window_indicator :
@@ -141,46 +124,31 @@ Proof.
   - intros [H1 H2] Hc; exact (Hc H1 H2).
 Qed.
 
-(** * The single integral produced by the sample *)
 
-Lemma od_integral :
-  forall (p c b : R) (v : state),
-    (0 < b)%R ->
-    q_eval
-      [[ integral od_n ~ $(Laplace (TConst 0) (TConst b)),
-         indicator[ ($(od_minus_one) <= $(od_diff p c) + od_n)
-                    /\ ($(od_diff p c) + od_n < 1) ] ]] v
-    = od_answer p c b.
+Lemma od_hi_value :
+  forall (p c : R) (v : state), term_eval (od_hi p c) v = 1 - od_D p c.
+Proof. intros; unfold od_hi, od_diff, od_minus_one, od_D; cbn [term_eval]; ring. Qed.
+
+Lemma od_lo_value :
+  forall (p c : R) (v : state), term_eval (od_lo p c) v = -1 - od_D p c.
+Proof. intros; unfold od_lo, od_diff, od_minus_one, od_D; cbn [term_eval]; ring. Qed.
+
+
+Lemma od_cdf_value :
+  forall (p c b : R) (cut : Term) (k : R) (v : state),
+    0 < b ->
+    (forall w, term_eval cut w = k) ->
+    q_eval (od_cdf p c b cut) v = lap_atmost 0 b k.
 Proof.
-  intros p c b v Hb.
-  unfold od_answer.
-  cbn [q_eval distribution_density].
-  rewrite (real_integral_extensional
-             _ (fun z =>
-                  ((1 / (2 * b)) * exp (- Rabs (z - 0) / b))
-                  * real_indicator (z < 1 - od_D p c)%R
-                  - ((1 / (2 * b)) * exp (- Rabs (z - 0) / b))
-                    * real_indicator (z < -1 - od_D p c)%R)).
-  - rewrite od_integral_minus.
-    rewrite !laplace_integral_strict_cdf by exact Hb.
-    reflexivity.
-  - intro z.
-    rewrite (real_indicator_extensional
-               _ ((-1 - od_D p c <= z) /\ (z < 1 - od_D p c))%R).
-    2:{ rewrite od_satisfies_c_and.
-        unfold od_minus_one, c_lt, update_real, update_real_values.
-        cbn [satisfies c_not term_eval real_program_values].
-        rewrite !rpv_eq_dec_refl.
-        rewrite od_diff_value.
-        split; intros [H1 H2]; split; lra. }
-    rewrite (od_window_indicator (-1 - od_D p c) (1 - od_D p c) z) by lra.
-    cbn [term_eval]; ring.
+  intros p c b cut k v Hb Hcut.
+  unfold od_cdf, od_noise.
+  apply (disk_laplace_indicator od_z _ 0 b _ (fun r => r <= k)).
+  - exact Hb.
+  - reflexivity.
+  - intro r; cbn [satisfies]; rewrite update_real_same, Hcut; reflexivity.
 Qed.
 
-(** * The weakest precondition *)
-
-Definition od_post (p c b : R) : PFormula :=
-  [[ Pr[od_inside] = $(od_answer p c b) ]].
+(** * The weakest preconditions *)
 
 Definition od_after_add (p c b : R) : PFormula :=
   subst_bool_pformula od_inside od_window (od_post p c b).
@@ -191,45 +159,82 @@ Definition od_after_sample (p c b : R) : PFormula :=
 Definition od_after_assign (p c b : R) : PFormula :=
   sample_pformula od_n (od_noise b) (od_after_sample p c b).
 
-Definition od_pre (p c b : R) : PFormula :=
-  [[ E[ integral od_n ~ $(Laplace (TConst 0) (TConst b)),
-        indicator[ ($(od_minus_one) <= $(od_diff p c) + od_n)
-                   /\ ($(od_diff p c) + od_n < 1) ] ]
-     = $(od_answer p c b) ]].
+Definition od_guard (p c : R) : CFormula :=
+  <{ ($(od_minus_one) <= $(od_diff p c) + od_n) /\ ($(od_diff p c) + od_n < 1) }>.
 
-(** The opening assignment closes the window's GUARD; [od_n] stays bound. *)
+Definition od_pre (p c b : R) : PFormula :=
+  [[ E[ integral od_n ~ $(od_noise b), indicator[ $(od_guard p c) ] ]
+     = $(p_sub
+           (PExpect (QIntegral od_n (od_noise b) (od_cdf p c b (od_hi p c))))
+           (PExpect (QIntegral od_n (od_noise b) (od_cdf p c b (od_lo p c))))) ]].
+
 Lemma od_pre_is_wp :
   forall p c b : R,
     subst_real_pformula od_e (od_diff p c) (od_after_assign p c b) =
     od_pre p c b.
-Proof. intros; reflexivity. Qed.
+Proof. intros; vm_compute; reflexivity. Qed.
 
-Lemma od_normalized_implies_pre :
+(** * Evaluating the pieces *)
+
+Lemma od_guard_value :
+  forall (p c b : R) (v : state),
+    0 < b ->
+    q_eval [[ integral od_n ~ $(od_noise b), indicator[ $(od_guard p c) ] ]] v
+    = lap_atmost 0 b (1 - od_D p c) - lap_atmost 0 b (-1 - od_D p c).
+Proof.
+  intros p c b v Hb.
+  unfold od_noise.
+  rewrite (disk_laplace_indicator od_n _ 0 b _
+             (fun r => -1 - od_D p c <= r < 1 - od_D p c)).
+  - apply disk_lap_window; [exact Hb | lra].
+  - exact Hb.
+  - reflexivity.
+  - intro r; unfold od_guard.
+    rewrite od_satisfies_c_and.
+    unfold od_minus_one, c_lt.
+    cbn [satisfies c_not].
+    change (term_eval (TAdd (od_diff p c) (TProgVar od_n)) (update_real v od_n r))
+      with (term_eval (od_diff p c) (update_real v od_n r)
+            + term_eval (TProgVar od_n) (update_real v od_n r)).
+    rewrite update_real_same, od_diff_value.
+    cbn [term_eval].
+    split; intros [H1 H2]; split; lra.
+Qed.
+
+Lemma od_pre_valid :
   forall p c b : R,
-    (0 < b)%R ->
+    0 < b ->
     pformula_valid [[ Pr[true] = 1 -> $(od_pre p c b) ]].
 Proof.
   intros p c b Hb ps Hadm.
-  cbn [psatisfies]; intro Hpre.
-  apply psatisfies_p_eq in Hpre.
-  cbn [pterm_eval] in Hpre.
-  unfold od_pre.
-  apply psatisfies_p_eq.
-  cbn [pterm_eval].
-  apply t3_expect_const.
-  - exact Hpre.
-  - intro v; apply od_integral; exact Hb.
+  cbn [psatisfies]; intros _.
+  unfold od_pre; apply psatisfies_p_eq.
+  rewrite pterm_eval_p_sub; cbn [pterm_eval].
+  rewrite (expect_const_construct _ _ _ (fun v => od_guard_value p c b v Hb)).
+  rewrite (expect_const_construct _
+             (QIntegral od_n (od_noise b) (od_cdf p c b (od_hi p c)))
+             (lap_atmost 0 b (1 - od_D p c))).
+  2:{ intro v; apply disk_integral_const.
+      - cbn [distribution_valid od_noise term_eval]; exact Hb.
+      - intro w; apply od_cdf_value; [exact Hb | apply od_hi_value]. }
+  rewrite (expect_const_construct _
+             (QIntegral od_n (od_noise b) (od_cdf p c b (od_lo p c)))
+             (lap_atmost 0 b (-1 - od_D p c))).
+  2:{ intro v; apply disk_integral_const.
+      - cbn [distribution_valid od_noise term_eval]; exact Hb.
+      - intro w; apply od_cdf_value; [exact Hb | apply od_lo_value]. }
+  ring.
 Qed.
 
 Lemma od_noise_valid_under :
   forall (b : R) (pre : PFormula),
-    (0 < b)%R ->
+    0 < b ->
     pformula_valid
       [[ $(pre) -> almost_sure[$(distribution_valid_formula (od_noise b))] ]].
 Proof.
   intros b pre Hb ps Hadm.
-  cbn [psatisfies]; intro Hignore.
-  clear Hignore; revert ps.
+  cbn [psatisfies]; intros _.
+  revert ps Hadm.
   apply p_almost_sure_of_pointwise.
   intro v.
   unfold od_noise.
@@ -241,10 +246,10 @@ Qed.
 
 Theorem od_correct :
   forall p c b : R,
-    (0 < b)%R ->
+    0 < b ->
     {{ Pr[true] = 1 }}
       $(od_prog p c b)
-    {{ Pr[od_inside] = $(od_answer p c b) }}.
+    {{ $(od_post p c b) }}.
 Proof.
   intros p c b Hb.
   unfold od_prog.
@@ -253,14 +258,53 @@ Proof.
       (eta1 := subst_real_pformula od_e (od_diff p c) (od_after_assign p c b))
       (eta2 := od_after_assign p c b).
     + rewrite od_pre_is_wp.
-      apply od_normalized_implies_pre; exact Hb.
+      apply od_pre_valid; exact Hb.
     + apply HRealAssign.
-    + intro ps; cbn [psatisfies]; tauto.
+    + intros ps _; cbn [psatisfies]; tauto.
   - eapply HSeq with (eta2 := od_after_sample p c b).
     + apply HRealSample.
-      * intro ps; cbn [psatisfies]; intro H; exact H.
+      * intros ps _; cbn [psatisfies]; intro H; exact H.
       * apply od_noise_valid_under; exact Hb.
     + eapply HSeq with (eta2 := od_after_add p c b).
       * apply HRealAssign.
       * apply HBoolAssign.
+Qed.
+
+(** * Closed form, for comparison only (not used in any triple) *)
+
+Lemma od_answer_value :
+  forall (p c b : R) (ps : Pstate),
+    0 < b ->
+    pterm_eval (od_answer p c b) ps =
+    (lap_atmost 0 b (1 - od_D p c) - lap_atmost 0 b (-1 - od_D p c)) *
+      expectation (pstate_measure ps) (q_eval (QIndicator c_true)).
+Proof.
+  intros p c b ps Hb.
+  unfold od_answer; rewrite pterm_eval_p_sub; cbn [pterm_eval].
+  rewrite (expect_const_construct _ (od_cdf p c b (od_hi p c))
+             (lap_atmost 0 b (1 - od_D p c)))
+    by (intro v; apply od_cdf_value; [exact Hb | apply od_hi_value]).
+  rewrite (expect_const_construct _ (od_cdf p c b (od_lo p c))
+             (lap_atmost 0 b (-1 - od_D p c)))
+    by (intro v; apply od_cdf_value; [exact Hb | apply od_lo_value]).
+  ring.
+Qed.
+
+(** At a point exactly on the centre the window mass is [1 - exp(-1/b)]. *)
+Lemma od_window_centre :
+  forall p b : R,
+    0 < b ->
+    lap_atmost 0 b (1 - od_D p p) - lap_atmost 0 b (-1 - od_D p p)
+    = 1 - exp (-1 / b).
+Proof.
+  intros p b Hb.
+  unfold od_D.
+  replace (1 - (p - p)) with 1 by ring.
+  replace (-1 - (p - p)) with (-1) by ring.
+  rewrite !disk_lap_atmost_closed by exact Hb.
+  rewrite Rminus_0_r, Rminus_0_r.
+  rewrite disk_F_nonneg by lra.
+  rewrite disk_F_nonpos by lra.
+  replace (- (1) / b) with (-1 / b) by (field; lra).
+  field.
 Qed.

@@ -1,28 +1,15 @@
 (**
-  SampleBeforeLoop.v -- a continuous sample taken BEFORE a discrete loop.
+  SampleBeforeLoop.v
 
-  TEST 1: continuous sampling OUTSIDE a while loop.
+  Program ([t1_prog s]):
 
-      x <- sample(Laplace(0, s));
+      x <- sample(laplace(0, s));
       b <- ff;
       while ~b do toss(b, 1/2)
 
-  THE TRIPLE ([t1_correct], for [0 < s]):
+  Triple ([t1_correct], for 0 < s; pre [t1_pre], post [t1_post]):
 
-      { E[1_tt] = y }   t1_prog s   { Pr[b] = 1 * y }
-
-  All the initial mass ends up with [b] true -- the loop terminates almost
-  surely, and the sampled [x] is carried along untouched.
-
-  This is the DiPWhile "bounded assignments" shape: no real variable is
-  assigned inside the loop.  It composes [HRealSample], [HBoolAssign] and
-  [HWhile] in one derivation, and it is the smallest program that does so.
-
-  The loop is deliberately independent of [x].  That is forced, not chosen:
-  [HWhile]'s precondition [p_concentrated_mass] demands the whole measure sit
-  in a single region, so if the guard read [x] the post-sample measure --
-  spread across [x < 0] and [0 <= x] -- could never enter the loop.  Fixing
-  that needs the unimplemented [SUM] rule.
+      { E[1_tt] = y }  t1_prog s  { E[1_(tt /\ ~~b)] = 1 * y }
 *)
 
 From Stdlib Require Import Reals.
@@ -32,6 +19,7 @@ From Stdlib Require Import Lia.
 From Stdlib Require Import ClassicalDescription.
 From Stdlib Require Import Classical.
 Require Import CPHL.
+Require Import MeasureIntegration CPHLFacts.ConstructFacts.
 
 Open Scope R_scope.
 Open Scope string_scope.
@@ -141,38 +129,27 @@ Proof.
   apply expect_indicator_valid; exact Hall.
 Qed.
 
-(** ** The Laplace density integrates to one
+(** ** Indicator integrals depend only on the indicator's truth value
 
-    Derivable rather than assumed: split the line at 0 and add the CDF and
-    survival closed forms already proved in [CPHL.v]. *)
-Lemma laplace_density_total :
-  forall location scale : R,
-    (0 < scale)%R ->
-    real_integral
-      (fun z => (1 / (2 * scale)) * exp (- Rabs (z - location) / scale)) = 1.
+    [q_eval] of an integral is a kernel expectation, so two indicator bodies
+    that agree at every valuation give the same integral. *)
+Lemma q_integral_indicator_ext :
+  forall (x : RealProgramVar) (d : Distribution) (gamma1 gamma2 : CFormula)
+    (v : state),
+    (forall w : state, satisfies w gamma1 <-> satisfies w gamma2) ->
+    q_eval (QIntegral x d (QIndicator gamma1)) v =
+    q_eval (QIntegral x d (QIndicator gamma2)) v.
 Proof.
-  intros location scale Hscale.
-  transitivity
-    (real_integral
-       (fun z =>
-          ((1 / (2 * scale)) * exp (- Rabs (z - location) / scale)) *
-          real_indicator (z < 0)%R) +
-     real_integral
-       (fun z =>
-          ((1 / (2 * scale)) * exp (- Rabs (z - location) / scale)) *
-          real_indicator (0 <= z)%R))%R.
-  - rewrite <- real_integral_add.
-    apply real_integral_extensional; intro z.
-    destruct (Rlt_dec z 0) as [Hz | Hz].
-    + rewrite (real_indicator_true _ Hz).
-      rewrite (real_indicator_false (0 <= z)%R) by lra.
-      ring.
-    + rewrite (real_indicator_false (z < 0)%R) by lra.
-      rewrite (real_indicator_true (0 <= z)%R) by lra.
-      ring.
-  - rewrite laplace_integral_strict_cdf by exact Hscale.
-    rewrite laplace_integral_survival by exact Hscale.
-    ring.
+  intros x d gamma1 gamma2 v Hiff.
+  change (@ConcreteMeasure.expectation _ RealIntegration.Space
+            (distribution_measure d v)
+            (fun z => q_eval (QIndicator gamma1) (update_real v x z)) =
+          @ConcreteMeasure.expectation _ RealIntegration.Space
+            (distribution_measure d v)
+            (fun z => q_eval (QIndicator gamma2) (update_real v x z))).
+  apply ConcreteMeasure.expectation_ext; intro z.
+  rewrite !q_eval_indicatorE.
+  apply real_indicator_extensional; apply Hiff.
 Qed.
 
 (** ** The transformers commute with the derived connectives
@@ -218,14 +195,15 @@ Lemma expect_laplace_integral_valid :
     = expectation mu (q_eval (QIndicator c_true)).
 Proof.
   intros mu x loc sc gamma Hsc Hall.
-  transitivity (expectation mu (fun _ : state => 1%R)).
-  - apply expectation_extensional; intro v.
-    cbn [q_eval distribution_density term_eval].
-    rewrite (real_integral_extensional
-               _ (fun z => (1 / (2 * sc)) * exp (- Rabs (z - loc) / sc)))
-      by (intro z; rewrite real_indicator_true by apply Hall; ring).
-    apply laplace_density_total; exact Hsc.
-  - rewrite expectation_constant; ring.
+  apply expectation_extensional; intro v.
+  rewrite (q_integral_indicator_ext x _ gamma c_true v)
+    by (intro w; split; intro; [cbn [c_true satisfies]; tauto | apply Hall]).
+  rewrite q_integral_true, q_eval_indicatorE.
+  rewrite real_indicator_true by (cbn [c_true satisfies]; tauto).
+  unfold distribution_validb.
+  destruct (DistributionSemantics.validbP
+              (Laplace (TConst loc) (TConst sc)) v) as [_ | Hinv];
+    [reflexivity | exfalso; apply Hinv; cbn [distribution_valid term_eval]; exact Hsc].
 Qed.
 
 (** * TEST 1 *)
@@ -288,7 +266,6 @@ Proof.
   - (* the concentrated-mass precondition implies the tossed postcondition *)
     intro ps.
     intro Hadm.
-    intro Hadm.
     cbn [psatisfies].
     intro Hpre.
     apply psatisfies_p_and in Hpre.
@@ -302,8 +279,7 @@ Proof.
     + apply psatisfies_p_and; split.
       * apply psatisfies_p_true.
       * apply psatisfies_p_eq.
-        cbn [pterm_eval toss_pterm subst_bool_pconstruct
-             subst_bool_cformula c_not].
+        cbn [pterm_eval toss_pterm subst_bool_pconstruct subst_bool_cformula c_not subst_bool_pconstruct_fuel pconstruct_size].
         rewrite !bpv_eq_dec_refl.
         rewrite (expect_indicator_unsat _ (FImpl c_true FFalse))
           by (intro v; cbn [c_true satisfies]; tauto).
@@ -311,9 +287,7 @@ Proof.
           by (intro v; cbn [satisfies]; tauto).
         lra.
     + apply psatisfies_p_eq.
-      cbn [pterm_eval toss_pterm condition_pconstruct
-           condition_pconstruct_fuel pconstruct_size subst_bool_pconstruct
-           subst_bool_cformula c_and c_not].
+      cbn [pterm_eval toss_pterm condition_pconstruct condition_pconstruct_fuel pconstruct_size subst_bool_pconstruct subst_bool_cformula c_and c_not subst_bool_pconstruct_fuel].
       rewrite !bpv_eq_dec_refl.
       rewrite (expect_indicator_valid _
                  (c_and c_true (c_not (c_not c_true))))
@@ -379,7 +353,6 @@ Proof.
   - (* x <- sample(Laplace(0,s)) *)
     apply HRealSample.
     + intro ps.
-    + intro Hadm.
       intro Hadm.
       cbn [psatisfies].
       intro Hpre.
@@ -391,8 +364,7 @@ Proof.
       rewrite sample_pformula_p_and, !sample_pformula_p_eq.
       apply psatisfies_p_and; split.
       * apply psatisfies_p_eq.
-        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula
-             c_not].
+        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula c_not subst_bool_pconstruct_fuel pconstruct_size].
         rewrite !bpv_eq_dec_refl.
         cbn [sample_pterm pterm_eval].
         rewrite (expect_laplace_integral_valid _ _ _ _ (FImpl FFalse FFalse))
@@ -401,14 +373,12 @@ Proof.
           by (exact Hs || (intro v; cbn [c_true satisfies]; tauto)).
         reflexivity.
       * apply psatisfies_p_eq.
-        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula
-             sample_pterm pterm_eval].
+        cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_cformula sample_pterm pterm_eval subst_bool_pconstruct_fuel pconstruct_size].
         rewrite (expect_laplace_integral_valid _ _ _ _ c_true)
           by (exact Hs || (intro v; cbn [c_true satisfies]; tauto)).
         exact Hpre.
-    + intros ps _.
-      revert ps.
-      apply p_almost_sure_of_pointwise.
+    + intros ps Hadm _.
+      refine (p_almost_sure_of_pointwise _ _ ps Hadm).
       intro v.
       unfold t1_noise.
       cbn [distribution_valid_formula c_lt c_not satisfies term_eval].

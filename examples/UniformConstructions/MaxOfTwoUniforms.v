@@ -1,49 +1,21 @@
 (**
-  MaxOfTwoUniforms.v -- the same law as TriangularRejection.v, by a route
-  that needs NO moment axiom.  A cross-check on the axiom that file adds.
+  MaxOfTwoUniforms.v
 
-      x <- sample(Uniform(0,1));
-      y <- sample(Uniform(0,1))
-
-  THE TRIPLE ([mx_correct], for [0 <= t <= 1]):
-
-      { E[1_tt] = w }
-          mx_prog
-      { Pr[x < t  /\  y < t]  =  t * t * w }
-
-  [x < t /\ y < t] is [max(x,y) < t], so this is the CDF of the maximum of
-  two independent uniforms -- the same Beta(2,1) law that
-  TriangularRejection.v obtains by rejection.
-
-  WHY IT IS HERE.  The two routes are analytically independent:
-
-    - TriangularRejection.v accepts iff [y < x].  That does NOT factor, the
-      inner integral returns a function of the outer variable, and the outer
-      integral needs [real_integral_between_linear].
-    - Here the event DOES factor into an x-part and a y-part, so the inner
-      integral collapses to the constant [uniform_cdf 0 1 t] and the outer
-      is another CDF.  The answer [t * t] is a product of two CDFs and needs
-      no moment law at all.
-
-  So if [real_integral_between_linear] were wrong, these two files would
-  disagree.  [Print Assumptions mx_correct] should NOT mention it.
-
-  ONE MORE DIFFERENCE.  This file has no loop, so no [while_progress], so
-  [t = 0] is allowed -- and gives probability 0, correctly.
-  TriangularRejection.v cannot reach [t = 0] at all.  The boundary gap there
-  is a property of the WHILE RULE, not of the mathematics, and this file is
-  the evidence.
+  Program ([mx_prog]):
+      mx_x <- sample(uniform(0, 1)); mx_y <- sample(uniform(0, 1))
+  Triple ([mx_correct], for 0 <= t <= 1; event [mx_event t]):
+      { E[1_tt] = mx_w }  mx_prog  { E[1_(mx_x < t /\ mx_y < t)] = t * t * mx_w }
 *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Strings.String.
 From Stdlib Require Import Lra.
 From Stdlib Require Import Lia.
-From Stdlib Require Import ClassicalDescription.
-From Stdlib Require Import Classical.
 Require Import CPHL.
+Require Import CPHLFacts.CalculationFacts.
 Require Import SampleBeforeLoop.
 Require Import PersistentSampleLoop.
+Require Import HalfLaplaceRejection CdfAssertions.
 Require Import UniformAxiomsAdditional.
 Require Import UniformRejectionSampling.
 
@@ -69,11 +41,6 @@ Definition mx_event (t : R) : CFormula :=
 Definition mx_prog : Cmd :=
   <{ mx_x sample $(mx_unit);
      mx_y sample $(mx_unit) }>.
-
-Lemma mx_density_eq :
-  forall (v : state) (z : R),
-    distribution_density mx_unit v z = uniform_density_R 0 1 z.
-Proof. reflexivity. Qed.
 
 (** * The event factors *)
 
@@ -128,28 +95,38 @@ Proof.
       split; intro Hc; lra.
 Qed.
 
-(** * Both integrals are plain CDFs *)
+(** * Both integrals are constants on intervals *)
 
 Lemma mx_inner :
   forall (t : R) (v : state) (k : R),
+    (0 <= t)%R -> (t <= 1)%R ->
     q_eval (QIntegral mx_y mx_unit (QIndicator (mx_event t)))
       (update_real v mx_x k) =
-    (real_indicator (k < t)%R * uniform_cdf 0 1 t)%R.
+    (real_indicator (k < t)%R * t)%R.
 Proof.
-  intros t v k.
-  rewrite q_eval_integral.
-  transitivity
-    (real_indicator (k < t)%R *
-     real_integral
-       (fun m => uniform_density_R 0 1 m * real_indicator (m < t)%R))%R.
-  - rewrite <- real_integral_scale.
-    apply real_integral_extensional; intro m.
-    rewrite mx_density_eq.
-    cbn [q_eval].
-    rewrite mx_indicator.
-    ring.
-  - rewrite uniform_integral_strict_cdf by lra.
-    reflexivity.
+  intros t v k H0 H1.
+  unfold mx_unit; rewrite q_eval_unit_uniform.
+  destruct (Rlt_dec k t) as [Hk | Hk].
+  - rewrite (real_indicator_true _ Hk).
+    rewrite (real_integral_extensional _
+               (fun m => real_indicator (0 <= m < t)%R * 1)).
+    + rewrite real_integral_open_const by lra; ring.
+    + intro m; rewrite q_eval_indicatorE, mx_indicator,
+        (real_indicator_true (k < t)%R Hk).
+      destruct (Rlt_dec m t) as [Hm | Hm].
+      * rewrite (real_indicator_true (m < t)%R Hm).
+        destruct (Rle_dec 0 m) as [Hm0 | Hm0].
+        -- rewrite (real_indicator_true (0 <= m <= 1)%R) by lra.
+           rewrite (real_indicator_true (0 <= m < t)%R) by lra; ring.
+        -- rewrite (real_indicator_false (0 <= m <= 1)%R) by lra.
+           rewrite (real_indicator_false (0 <= m < t)%R) by lra; ring.
+      * rewrite (real_indicator_false (m < t)%R Hm).
+        rewrite (real_indicator_false (0 <= m < t)%R) by lra; ring.
+  - rewrite (real_indicator_false _ Hk).
+    rewrite (real_integral_extensional _ (fun _ => 0%R)).
+    + rewrite real_integral_zero; ring.
+    + intro m; rewrite q_eval_indicatorE, mx_indicator,
+        (real_indicator_false (k < t)%R Hk); ring.
 Qed.
 
 Lemma mx_qeval :
@@ -160,18 +137,20 @@ Lemma mx_qeval :
       v = (t * t)%R.
 Proof.
   intros t v H0 H1.
-  rewrite q_eval_integral.
-  transitivity
-    (uniform_cdf 0 1 t *
-     real_integral
-       (fun k => uniform_density_R 0 1 k * real_indicator (k < t)%R))%R.
-  - rewrite <- real_integral_scale.
-    apply real_integral_extensional; intro k.
-    rewrite mx_density_eq, (mx_inner t).
-    ring.
-  - rewrite uniform_integral_strict_cdf by lra.
-    rewrite (uniform_cdf_unit t) by assumption.
-    reflexivity.
+  unfold mx_unit at 1; rewrite q_eval_unit_uniform.
+  rewrite (real_integral_extensional _
+             (fun k => real_indicator (0 <= k < t)%R * t)).
+  - rewrite real_integral_open_const by lra; ring.
+  - intro k; rewrite (mx_inner t v k H0 H1).
+    destruct (Rlt_dec k t) as [Hk | Hk].
+    + rewrite (real_indicator_true (k < t)%R Hk).
+      destruct (Rle_dec 0 k) as [Hk0 | Hk0].
+      * rewrite (real_indicator_true (0 <= k <= 1)%R) by lra.
+        rewrite (real_indicator_true (0 <= k < t)%R) by lra; ring.
+      * rewrite (real_indicator_false (0 <= k <= 1)%R) by lra.
+        rewrite (real_indicator_false (0 <= k < t)%R) by lra; ring.
+    + rewrite (real_indicator_false (k < t)%R Hk).
+      rewrite (real_indicator_false (0 <= k < t)%R) by lra; ring.
 Qed.
 
 (** * The theorem
@@ -183,10 +162,8 @@ Lemma mx_unit_valid_under :
     pformula_valid
       (PFImpl pre (p_almost_sure (distribution_valid_formula mx_unit))).
 Proof.
-  intros pre ps Hadm.
-  cbn [psatisfies]; intro Hignore.
-  clear Hignore; revert ps.
-  apply p_almost_sure_of_pointwise.
+  intros pre ps Hadm _.
+  refine (p_almost_sure_of_pointwise _ _ ps Hadm).
   intro v.
   unfold mx_unit.
   cbn [distribution_valid_formula c_lt c_not satisfies term_eval].
@@ -208,8 +185,7 @@ Proof.
          (p_eq (PExpect (QIndicator (mx_event t)))
             (PMul (PConst (t * t)) (PVar mx_w)))).
   - apply HRealSample; [| apply mx_unit_valid_under].
-    intro ps.
-    intro Hadm.
+    intros ps Hadm.
     cbn [psatisfies].
     intro Hpre.
     apply psatisfies_p_eq in Hpre.
@@ -217,11 +193,8 @@ Proof.
     rewrite !sample_pformula_p_eq.
     apply psatisfies_p_eq.
     cbn [sample_pterm pterm_eval].
-    transitivity
-      (expectation (pstate_measure ps) (fun _ : state => (t * t)%R)).
-    + apply expectation_extensional; intro v.
-      apply mx_qeval; assumption.
-    + rewrite expectation_constant, Hpre; reflexivity.
+    rewrite (expect_const_construct _ _ (t * t)%R), Hpre;
+      [reflexivity | intro v; apply mx_qeval; assumption].
   - apply HRealSample; [| apply mx_unit_valid_under].
-    intro ps; cbn [psatisfies]; intro H; exact H.
+    intros ps Hadm; cbn [psatisfies]; intro H; exact H.
 Qed.

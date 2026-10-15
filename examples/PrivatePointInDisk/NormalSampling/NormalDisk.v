@@ -1,96 +1,29 @@
 (**
-  NormalDisk.v -- the four-noise point-in-disk mechanism with NORMAL noise
-  instead of Laplace, and what the closure of the normal family under
-  differences does and does not buy.
+  NormalDisk.v
 
-      n1 <- sample(Gaussian(0, b));   (* on px *)
-      n3 <- sample(Gaussian(0, b));   (* on cx *)
-      n2 <- sample(Gaussian(0, b));   (* on py *)
-      n4 <- sample(Gaussian(0, b));   (* on cy *)
-      inside := ( ((px+n1) - (cx+n3))^2 + ((py+n2) - (cy+n4))^2 < 1 )
-
-  THE TRIPLE ([nd_four_noise_derivable], for [0 < b]).  It is CONDITIONAL:
-  the value of the four-fold integral is a hypothesis, not a conclusion.
-
-      (forall v, q_eval (nd_construct px py cx cy b) v = r)
-        ->
-      { Pr[tt] = 1 }
-          nd_prog px py cx cy b
-      { Pr[inside] = r }
-
-  Read it as: every Hoare step of this mechanism is available -- the four
-  [HRealSample]s, the [HBoolAssign], the [HSeq] chain -- and the ONLY thing
-  standing between it and an unconditional triple is the value of that one
-  integral.  The hypothesis is exactly the open part, and the two ways to
-  discharge it are the targets at the end of the file
-  ([nd_reduction_target], [nd_central_target]).
-
-  WHAT IS PROVED HERE
-
-  - [nd_combined_noise] : the two noises acting on one coordinate collapse
-    into a SINGLE normal.  Each difference n1 - n3 has density
-    [Gaussian(0, b*sqrt 2)], by GaussianDifference.v's [gc_difference].
-    This is the "cut out integrals" step, at the analytic level, and unlike
-    the Laplace case the result stays inside the sampling family -- there is
-    a [Distribution] in CPHL denoting it.
-
-  - [nd_four_noise_derivable] : the Hoare derivation of the whole triple
-    goes through given only the VALUE of the integral.  No new axioms.  So
-    the Hoare logic is not what blocks this.
-
-  WHAT IS NOT, AND THE PAYOFF THAT NORMALS DO GIVE
-
-  - [nd_reduction_target] : that the four-fold weakest precondition equals
-    the two-fold one.  Blocked by flags/FLAGS.md F15 -- collapsing nested
-    integrals needs change of variables and Fubini, which [real_integral]
-    lacks.  Note this is blocked for exactly the same reason as in the
-    Laplace case: switching distribution does not help the REDUCTION.
-
-  - [nd_central_target] : where normals genuinely win.  At the centre
-    (px = cx and py = cy) the answer is ELEMENTARY:
-
-        Pr[inside]  =  1 - exp( -1 / (4 b^2) ).
-
-    Reason: n1-n3 and n2-n4 are independent N(0, sigma) with
-    sigma^2 = 2 b^2, so the pair is a rotationally symmetric bivariate
-    normal, and the squared radius is exponential:
-    Pr[U^2+V^2 < 1] = 1 - exp(-1/(2 sigma^2)) = 1 - exp(-1/(4 b^2)).
-    Checked numerically against a 3e6-sample Monte Carlo:
-
-        b = 0.3   MC 0.93780   formula 0.93782
-        b = 0.5   MC 0.63214   formula 0.63212
-        b = 1.0   MC 0.22107   formula 0.22120
-
-    The Laplace analogue has no such closed form at ANY offset -- see
-    ../TODO/FourNoiseDisk.v.  Still, [nd_central_target] is NOT proved
-    here: reaching it from iterated one-dimensional integrals needs POLAR
-    COORDINATES, a two-dimensional change of variables, which is a strictly
-    stronger missing law than the one-dimensional ones F15 asks for.
-
-  - Off the centre the value is a Marcum Q-function (equivalently a
-    noncentral chi-squared CDF with two degrees of freedom), which is not
-    elementary.  So the normal gain is confined to the symmetric case.
-
-  THE TRADE, STATED PLAINLY.  Compared with Laplace, normal noise is
-
-      BETTER in 2-D : the central disk probability has a closed form at all,
-                      because the bivariate normal is rotationally
-                      symmetric;
-      WORSE  in 1-D : the Laplace CDF is elementary and CPHL evaluates it
-                      ([laplace_integral_strict_cdf]), so the 1-D membership
-                      tests in ../OneDimensional/ close completely.  The
-                      normal CDF is erf, which CPHL has no law for and which
-                      is not elementary -- so the normal 1-D test is out of
-                      reach even though the Laplace one is routine.
-
-  Neither change removes the F15 obstruction to the 4 -> 2 reduction.
+  Program ([nd_prog px py cx cy b]):
+      nd_n1 <- sample(gaussian(0, b));
+      nd_n3 <- sample(gaussian(0, b));
+      nd_n2 <- sample(gaussian(0, b));
+      nd_n4 <- sample(gaussian(0, b));
+      nd_inside := ( ((px+nd_n1) - (cx+nd_n3))^2 + ((py+nd_n2) - (cy+nd_n4))^2 < 1 )
+  Triple ([nd_correct], for 0 < b and any precondition eta; post [nd_post]):
+      { eta }
+        nd_prog px py cx cy b
+      { Pr[nd_inside] = E[ integral nd_z1 ~ gaussian(0, b), integral nd_z3 ~ gaussian(0, b),
+                           integral nd_z2 ~ gaussian(0, b), integral nd_z4 ~ gaussian(0, b),
+                           indicator[ ((px+nd_z1) - (cx+nd_z3))^2
+                                      + ((py+nd_z2) - (cy+nd_z4))^2 < 1 ] ] }
+  Unproved targets: [nd_reduction_target] (4-fold = 2-fold integral with
+  deviation s, s * s = 2 * b * b), [nd_central_target] (centre case equals
+  E[ integral nd_n1 ~ exponential(1/(4 b b)), indicator[nd_n1 < 1] ]).
 *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Strings.String.
 From Stdlib Require Import Lra.
-From Stdlib Require Import ClassicalDescription.
 Require Import CPHL.
+Require Import CPHLFacts.DistributionFacts CPHLFacts.CalculationFacts.
 Require Import SampleBeforeLoop.
 Require Import HalfLaplaceRejection.
 Require Import GaussianDifference.
@@ -100,42 +33,30 @@ Open Scope string_scope.
 Local Open Scope cphl_scope.
 Local Open Scope cphl_hoare_scope.
 
-(** * Cutting two noises down to one
+(** * Cutting two noises down to one (analytic layer only)
 
     The difference of the two normals acting on a coordinate is itself
-    normal, with deviation [b * sqrt 2]. *)
-
-Lemma nd_sqrt_two :
-  forall b : R, (0 < b)%R -> sqrt (b * b + b * b) = (b * sqrt 2)%R.
-Proof.
-  intros b Hb.
-  replace (b * b + b * b)%R with (2 * (b * b))%R by ring.
-  assert (H2 : (0 <= 2)%R) by lra.
-  assert (Hbb : (0 <= b * b)%R) by nra.
-  rewrite (sqrt_mult 2 (b * b) H2 Hbb).
-  rewrite (sqrt_square b) by lra.
-  ring.
-Qed.
+    normal, with deviation [s] where [s * s = 2 * b * b] (that is,
+    [s = b * sqrt 2]).  The deviation is a parameter so that no square root
+    appears inside a distribution term. *)
 
 Theorem nd_combined_noise :
-  forall b z : R,
-    (0 < b)%R ->
+  forall b s z : R,
+    (0 < b)%R -> (0 < s)%R -> (s * s = 2 * b * b)%R ->
     real_integral (fun u => gc_density 0 b u * gc_density 0 b (u - z)) =
-    gc_density 0 (b * sqrt 2) z.
+    gc_density 0 s z.
 Proof.
-  intros b z Hb.
-  rewrite (gc_difference_sqrt 0 b 0 b z Hb Hb).
-  rewrite (nd_sqrt_two b Hb).
+  intros b s z Hb Hs Hss.
+  rewrite (gc_difference 0 b 0 b s z Hb Hb Hs) by lra.
   f_equal; ring.
 Qed.
 
-(** The combined noise is itself a CPHL distribution -- which is the sense in
-    which the normal family is closed and the Laplace family is not. *)
-Definition nd_combined (b : R) : Distribution := <{ gaussian(0, $(b * sqrt 2)) }>.
+(** The combined noise is itself a CPHL distribution. *)
+Definition nd_combined (s : R) : Distribution := <{ gaussian(0, s) }>.
 
 Lemma nd_combined_density :
-  forall (b z : R) (v : state),
-    distribution_density (nd_combined b) v z = gc_density 0 (b * sqrt 2) z.
+  forall (s z : R) (v : state),
+    distribution_density (nd_combined s) v z = gc_density 0 s z.
 Proof. intros; reflexivity. Qed.
 
 (** * The program *)
@@ -150,14 +71,20 @@ Definition nd_minus_one : Term := TConst (-1).
 
 Definition nd_noise (b : R) : Distribution := <{ gaussian(0, b) }>.
 
-Definition nd_dx (px cx : R) : Term :=
-  <{ ($(px) + nd_n1) + $(nd_minus_one) * ($(cx) + nd_n3) }>.
-Definition nd_dy (py cy : R) : Term :=
-  <{ ($(py) + nd_n2) + $(nd_minus_one) * ($(cy) + nd_n4) }>.
+Definition nd_z1 : RealProgramVar := real_program_var "nd_z1".
+Definition nd_z3 : RealProgramVar := real_program_var "nd_z3".
+Definition nd_z2 : RealProgramVar := real_program_var "nd_z2".
+Definition nd_z4 : RealProgramVar := real_program_var "nd_z4".
+
+(** The disk test over four noise variables [a1 a3 a2 a4]. *)
+Definition nd_disk_at (a1 a3 a2 a4 : RealProgramVar) (px py cx cy : R) : CFormula :=
+  <{ ((($(px) + a1) + $(nd_minus_one) * ($(cx) + a3))
+      * (($(px) + a1) + $(nd_minus_one) * ($(cx) + a3)))
+     + ((($(py) + a2) + $(nd_minus_one) * ($(cy) + a4))
+        * (($(py) + a2) + $(nd_minus_one) * ($(cy) + a4))) < 1 }>.
 
 Definition nd_disk (px py cx cy : R) : CFormula :=
-  <{ ($(nd_dx px cx) * $(nd_dx px cx))
-     + ($(nd_dy py cy) * $(nd_dy py cy)) < 1 }>.
+  nd_disk_at nd_n1 nd_n3 nd_n2 nd_n4 px py cx cy.
 
 Definition nd_prog (px py cx cy b : R) : Cmd :=
   <{ nd_n1 sample $(nd_noise b);
@@ -166,42 +93,118 @@ Definition nd_prog (px py cx cy b : R) : Cmd :=
      nd_n4 sample $(nd_noise b);
      nd_inside b= $(nd_disk px py cx cy) }>.
 
-(** The four-fold weakest precondition.  The assertion logic expresses it. *)
-Definition nd_construct (px py cx cy b : R) : PConstruct :=
-  [[ integral nd_n1 ~ $(nd_noise b),
-     integral nd_n3 ~ $(nd_noise b),
-     integral nd_n2 ~ $(nd_noise b),
-     integral nd_n4 ~ $(nd_noise b),
-     indicator[ $(nd_disk px py cx cy) ] ]].
+(** The four-fold integral of the disk event, with bound variables
+    [a1 a3 a2 a4]. *)
+Definition nd_construct_at (a1 a3 a2 a4 : RealProgramVar) (px py cx cy b : R)
+  : PConstruct :=
+  [[ integral a1 ~ $(nd_noise b),
+     integral a3 ~ $(nd_noise b),
+     integral a2 ~ $(nd_noise b),
+     integral a4 ~ $(nd_noise b),
+     indicator[ $(nd_disk_at a1 a3 a2 a4 px py cx cy) ] ]].
 
-(** The two-fold one, after the combination [nd_combined_noise] licenses. *)
-Definition nd_two_construct (px py cx cy b : R) : PConstruct :=
-  [[ integral nd_n1 ~ $(nd_combined b),
-     integral nd_n2 ~ $(nd_combined b),
+(** The probability of the disk event, as used in the postcondition. *)
+Definition nd_construct (px py cx cy b : R) : PConstruct :=
+  nd_construct_at nd_z1 nd_z3 nd_z2 nd_z4 px py cx cy b.
+
+(** The two-fold one, after the combination [nd_combined_noise] licenses
+    (with combined deviation [s], [s * s = 2 * b * b]). *)
+Definition nd_two_construct (px py cx cy s : R) : PConstruct :=
+  [[ integral nd_n1 ~ $(nd_combined s),
+     integral nd_n2 ~ $(nd_combined s),
      indicator[ (($(px) + $(nd_minus_one) * $(cx)) + nd_n1)
                 * (($(px) + $(nd_minus_one) * $(cx)) + nd_n1)
                 + (($(py) + $(nd_minus_one) * $(cy)) + nd_n2)
                   * (($(py) + $(nd_minus_one) * $(cy)) + nd_n2) < 1 ] ]].
 
-(** * The Hoare derivation, modulo the integral *)
+(** * Weakest precondition *)
 
-Definition nd_post (r : R) : PFormula := [[ Pr[nd_inside] = $(r) ]].
+Definition nd_post (px py cx cy b : R) : PFormula :=
+  [[ Pr[nd_inside] = E[ $(nd_construct px py cx cy b) ] ]].
 
-Definition nd_s3 (px py cx cy r : R) : PFormula :=
-  subst_bool_pformula nd_inside (nd_disk px py cx cy) (nd_post r).
-Definition nd_s2 (px py cx cy b r : R) : PFormula :=
-  sample_pformula nd_n4 (nd_noise b) (nd_s3 px py cx cy r).
-Definition nd_s1 (px py cx cy b r : R) : PFormula :=
-  sample_pformula nd_n2 (nd_noise b) (nd_s2 px py cx cy b r).
-Definition nd_s0 (px py cx cy b r : R) : PFormula :=
-  sample_pformula nd_n3 (nd_noise b) (nd_s1 px py cx cy b r).
-Definition nd_pre (px py cx cy b r : R) : PFormula :=
-  sample_pformula nd_n1 (nd_noise b) (nd_s0 px py cx cy b r).
+Definition nd_s3 (px py cx cy b : R) : PFormula :=
+  subst_bool_pformula nd_inside (nd_disk px py cx cy) (nd_post px py cx cy b).
+Definition nd_s2 (px py cx cy b : R) : PFormula :=
+  sample_pformula nd_n4 (nd_noise b) (nd_s3 px py cx cy b).
+Definition nd_s1 (px py cx cy b : R) : PFormula :=
+  sample_pformula nd_n2 (nd_noise b) (nd_s2 px py cx cy b).
+Definition nd_s0 (px py cx cy b : R) : PFormula :=
+  sample_pformula nd_n3 (nd_noise b) (nd_s1 px py cx cy b).
+Definition nd_pre (px py cx cy b : R) : PFormula :=
+  sample_pformula nd_n1 (nd_noise b) (nd_s0 px py cx cy b).
+
+Definition nd_wrap (b : R) (q : PConstruct) : PConstruct :=
+  [[ integral nd_n1 ~ $(nd_noise b),
+     integral nd_n3 ~ $(nd_noise b),
+     integral nd_n2 ~ $(nd_noise b),
+     integral nd_n4 ~ $(nd_noise b), $(q) ]].
 
 Lemma nd_pre_shape :
-  forall px py cx cy b r : R,
-    nd_pre px py cx cy b r = [[ E[ $(nd_construct px py cx cy b) ] = $(r) ]].
+  forall px py cx cy b : R,
+    nd_pre px py cx cy b =
+    [[ E[ $(nd_construct_at nd_n1 nd_n3 nd_n2 nd_n4 px py cx cy b) ]
+       = E[ $(nd_wrap b (nd_construct px py cx cy b)) ] ]].
 Proof. intros; reflexivity. Qed.
+
+(** * Analysis *)
+
+Lemma nd_noise_valid :
+  forall (b : R) (v : state), 0 < b -> distribution_valid (nd_noise b) v.
+Proof. intros b v Hb; exact Hb. Qed.
+
+(** Integrating a state-independent body against a valid law returns it. *)
+Lemma nd_integral_const :
+  forall (x : RealProgramVar) (d : Distribution) (q : PConstruct) (v : state) (c : R),
+    distribution_valid d v ->
+    (forall w : state, q_eval q w = c) ->
+    q_eval (QIntegral x d q) v = c.
+Proof.
+  intros x d q v c Hd Hc.
+  rewrite (q_integral_density x d q v Hd).
+  rewrite (real_integral_extensional _ (fun z => c * distribution_density d v z))
+    by (intro z; rewrite Hc; apply Rmult_comm).
+  rewrite real_integral_scale by exact (distribution_density_integrable Hd).
+  rewrite (real_integral_distribution_density Hd).
+  change (c * 1 = c); ring.
+Qed.
+
+(** The four-fold integral rebinds every variable its indicator reads. *)
+Lemma nd_construct_state_free :
+  forall (px py cx cy b : R) (v w : state),
+    0 < b ->
+    q_eval (nd_construct_at nd_n1 nd_n3 nd_n2 nd_n4 px py cx cy b) v =
+    q_eval (nd_construct px py cx cy b) w.
+Proof.
+  intros px py cx cy b v w Hb.
+  assert (Hall : forall u, distribution_valid (nd_noise b) u)
+    by (intro u; exact Hb).
+  unfold nd_construct, nd_construct_at.
+  rewrite !(q_eval_integral_density _ _ _ Hall).
+  (* Variable lookups compute: both sides are convertible pointwise. *)
+  apply real_integral_extensional; intro a; f_equal.
+Qed.
+
+Lemma nd_pre_valid :
+  forall px py cx cy b : R,
+    0 < b -> pformula_valid (nd_pre px py cx cy b).
+Proof.
+  intros px py cx cy b Hb ps Hadm.
+  rewrite nd_pre_shape.
+  apply psatisfies_p_eq.
+  cbn [pterm_eval].
+  apply expectation_extensional; intro v.
+  symmetry.
+  unfold nd_wrap.
+  set (c := q_eval (nd_construct_at nd_n1 nd_n3 nd_n2 nd_n4 px py cx cy b) v).
+  assert (Hc : forall w, q_eval (nd_construct px py cx cy b) w = c)
+    by (intro w; unfold c; symmetry; apply nd_construct_state_free; exact Hb).
+  apply nd_integral_const; [apply nd_noise_valid; exact Hb | intro w1].
+  apply nd_integral_const; [apply nd_noise_valid; exact Hb | intro w2].
+  apply nd_integral_const; [apply nd_noise_valid; exact Hb | intro w3].
+  apply nd_integral_const; [apply nd_noise_valid; exact Hb | exact Hc].
+Qed.
+
+(** * The mechanism *)
 
 Lemma nd_noise_valid_under :
   forall (b : R) (pre : PFormula),
@@ -210,68 +213,58 @@ Lemma nd_noise_valid_under :
       [[ $(pre) -> almost_sure[$(distribution_valid_formula (nd_noise b))] ]].
 Proof.
   intros b pre Hb ps Hadm.
-  cbn [psatisfies]; intro Hignore.
-  clear Hignore; revert ps.
-  apply p_almost_sure_of_pointwise.
+  cbn [psatisfies]; intros _.
+  refine (p_almost_sure_of_pointwise _ _ ps Hadm).
   intro v.
   unfold nd_noise.
   cbn [distribution_valid_formula c_lt c_not satisfies term_eval].
   intro Hle; lra.
 Qed.
 
-(** Given only the value of the integral, every rule application succeeds. *)
-Theorem nd_four_noise_derivable :
-  forall px py cx cy b r : R,
+Theorem nd_correct :
+  forall (px py cx cy b : R) (eta : PFormula),
     (0 < b)%R ->
-    (forall v : state, q_eval (nd_construct px py cx cy b) v = r) ->
-    {{ Pr[true] = 1 }}
+    {{ $(eta) }}
       $(nd_prog px py cx cy b)
-    {{ Pr[nd_inside] = $(r) }}.
+    {{ Pr[nd_inside] = E[ $(nd_construct px py cx cy b) ] }}.
 Proof.
-  intros px py cx cy b r Hb Hval.
+  intros px py cx cy b eta Hb.
   unfold nd_prog.
-  eapply HSeq with (eta2 := nd_s0 px py cx cy b r).
+  eapply HSeq with (eta2 := nd_s0 px py cx cy b).
   - apply HRealSample.
-    + intro ps.
-    + intro Hadm.
-      cbn [psatisfies]; intro Hnorm.
-      apply psatisfies_p_eq in Hnorm.
-      cbn [pterm_eval] in Hnorm.
-      change (sample_pformula nd_n1 (nd_noise b) (nd_s0 px py cx cy b r))
-        with (nd_pre px py cx cy b r).
-      rewrite nd_pre_shape.
-      apply psatisfies_p_eq.
-      cbn [pterm_eval].
-      apply t3_expect_const; [exact Hnorm | exact Hval].
+    + intros ps Hadm _.
+      apply nd_pre_valid; assumption.
     + apply nd_noise_valid_under; exact Hb.
-  - eapply HSeq with (eta2 := nd_s1 px py cx cy b r).
+  - eapply HSeq with (eta2 := nd_s1 px py cx cy b).
     + apply HRealSample.
-      * intro ps; cbn [psatisfies]; intro H; exact H.
+      * intros ps Hadm; cbn [psatisfies]; intro H; exact H.
       * apply nd_noise_valid_under; exact Hb.
-    + eapply HSeq with (eta2 := nd_s2 px py cx cy b r).
+    + eapply HSeq with (eta2 := nd_s2 px py cx cy b).
       * apply HRealSample.
-        -- intro ps; cbn [psatisfies]; intro H; exact H.
+        -- intros ps Hadm; cbn [psatisfies]; intro H; exact H.
         -- apply nd_noise_valid_under; exact Hb.
-      * eapply HSeq with (eta2 := nd_s3 px py cx cy r).
+      * eapply HSeq with (eta2 := nd_s3 px py cx cy b).
         -- apply HRealSample.
-           ++ intro ps; cbn [psatisfies]; intro H; exact H.
+           ++ intros ps Hadm; cbn [psatisfies]; intro H; exact H.
            ++ apply nd_noise_valid_under; exact Hb.
         -- apply HBoolAssign.
 Qed.
 
-(** * The two statements that remain open
+(** * Statements that remain open (unproved targets) *)
 
-    Both STATED, neither proved. *)
-
-(** 4 -> 2.  The analytic content is [nd_combined_noise]; what is missing is
-    the right to reorganise the nested integrals.  flags/FLAGS.md F15. *)
-Definition nd_reduction_target (px py cx cy b : R) : Prop :=
+(** 4 -> 2: the four-fold integral equals the two-fold one with combined
+    deviation [s] ([s * s = 2 * b * b]).  Needs Fubini and a translation
+    change of variables for the nested kernel integrals. *)
+Definition nd_reduction_target (px py cx cy b s : R) : Prop :=
+  (s * s = 2 * b * b)%R ->
   forall v : state,
     q_eval (nd_construct px py cx cy b) v =
-    q_eval (nd_two_construct px py cx cy b) v.
+    q_eval (nd_two_construct px py cx cy s) v.
 
-(** The central case, where normal noise has an elementary answer that
-    Laplace never does.  Reaching it needs polar coordinates. *)
+(** The central case: [Pr[inside] = 1 - exp(-1/(4 b^2))], written as the
+    probability that an [exponential(1/(4 b b))] sample lies below [1].
+    Needs polar coordinates in two dimensions. *)
 Definition nd_central_target (p b : R) : Prop :=
   forall v : state,
-    q_eval (nd_construct p p p p b) v = (1 - exp (- 1 / (4 * b * b)))%R.
+    q_eval (nd_construct p p p p b) v =
+    q_eval [[ integral nd_n1 ~ exponential($(1 / (4 * b * b))), indicator[ nd_n1 < 1 ] ]] v.

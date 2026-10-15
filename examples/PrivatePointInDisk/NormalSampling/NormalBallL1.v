@@ -1,79 +1,29 @@
 (**
-  NormalBallL1.v -- the L1 membership test with the two POINTS perturbed
-  normally.  The L1 counterpart of NormalDisk.v, and the companion to
-  NormalDistanceL1.v, which perturbs the distance instead.
+  NormalBallL1.v
 
-      n1 <- sample(Gaussian(0, b));   n3 <- sample(Gaussian(0, b));
-      n2 <- sample(Gaussian(0, b));   n4 <- sample(Gaussian(0, b));
-      ux := (px+n1) - (cx+n3);   if ux < 0 then ux := -ux else skip end;
-      uy := (py+n2) - (cy+n4);   if uy < 0 then uy := -uy else skip end;
-      inside := (ux + uy < 1)
-
-  NO TRIPLE IS PROVED HERE.  The intended one is [nb_target]:
-
-      { Pr[tt] = 1 }
-          nb_prog px py cx cy b
-      { Pr[inside] = <the L1-ball probability> }
-
-  stated at the end and deliberately left open.  This file exists to record
-  the program, and one geometric fact that makes the L1 case genuinely
-  better than the L2 one.
-
-  WHY THE BRANCHES ARE HARDER HERE THAN IN NormalDistanceL1.v.
-
-  There the guards test a CLOSED term -- the coordinates are Rocq reals, so
-  after [ax := px - cx] the sign is fixed and one branch carries all the
-  mass.  That is what [nl_abs_neg] / [nl_abs_pos] exploit: the branch
-  constants are [(r, 0)] or [(0, r)].
-
-  Here the guards test the PERTURBED difference, which is random.  Both
-  branches carry mass, and [HIfEq] then needs those two masses.  They can be
-  carried symbolically as rigid variables, but they are exactly the
-  quantities nobody can evaluate -- so nothing is gained.
-
-  WHAT IS BETTER ABOUT L1, AND IT IS NOT SMALL.
-
-  For the L2 disk the section at a fixed first coordinate is
-
-      |v| < sqrt(1 - u^2)
-
-  whose endpoints are NOT polynomial in [u] -- that is the obstruction
-  recorded in flags/FLAGS.md F14, the same one that rules out Marsaglia's
-  polar method.  For the L1 ball the section is
-
-      |v| < 1 - |u|
-
-  whose endpoints are PIECEWISE LINEAR.  So the reachability criterion of
-  UniformConstructions/TriangularRejection.v -- sections must be intervals
-  with polynomial endpoints -- is satisfied, and the inner integral is a
-  plain difference of CDFs at linear arguments.
-
-  Consequences, which differ by noise distribution:
-
-    - with LAPLACE noise the outer integrand is then piecewise exponential
-      in [u], so the whole thing is ELEMENTARY.  An L1 four-noise mechanism
-      with Laplace noise looks genuinely reachable, unlike anything in the
-      L2 family;
-    - with NORMAL noise the outer integrand is [erf] at linear arguments,
-      truncated to [|u| < 1], which is an Owen's-T / bivariate-normal
-      quantity and not elementary.
-
-  Either way the 4-to-2 reduction is still blocked by F15, which is
-  distribution- and metric-independent.
-
-  So the ordering is: L1 + Laplace is the most promising unbuilt mechanism
-  in this directory tree, and it is blocked only by F15.
+  Program ([nb_prog px py cx cy b]):
+      nb_n1 <- sample(gaussian(0, b));  nb_n3 <- sample(gaussian(0, b));
+      nb_n2 <- sample(gaussian(0, b));  nb_n4 <- sample(gaussian(0, b));
+      nb_ux := (px + nb_n1) - (cx + nb_n3);
+      if nb_ux < 0 then nb_ux := -1 * nb_ux else skip end;
+      nb_uy := (py + nb_n2) - (cy + nb_n4);
+      if nb_uy < 0 then nb_uy := -1 * nb_uy else skip end;
+      nb_inside := (nb_ux + nb_uy < 1)
+  Triple (NOT PROVED; stated as [nb_target], for any precondition eta):
+      { eta }
+        nb_prog px py cx cy b
+      { Pr[nb_inside] = E[ integral nb_z1 ~ gaussian(0, b), integral nb_z3 ~ gaussian(0, b),
+                            integral nb_z2 ~ gaussian(0, b), integral nb_z4 ~ gaussian(0, b),
+                            indicator[ |dx| + |dy| < 1 ] ] }
+      where dx = (px + nb_z1) - (cx + nb_z3), dy = (py + nb_z2) - (cy + nb_z4), and
+      |dx| + |dy| < 1 is written as the four linear constraints +-dx +- dy < 1
+      ([nb_construct]).
 *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Strings.String.
 From Stdlib Require Import Lra.
-From Stdlib Require Import ClassicalDescription.
 Require Import CPHL.
-Require Import SampleBeforeLoop.
-Require Import HalfLaplaceRejection.
-Require Import GaussianDifference.
-Require Import NormalDistance.
 
 Open Scope R_scope.
 Open Scope string_scope.
@@ -115,21 +65,37 @@ Definition nb_prog (px py cx cy b : R) : Cmd :=
      $(nb_abs nb_uy);
      nb_inside b= $(nb_test) }>.
 
-(** The weakest precondition of the sampling prefix, for the event that the
-    rest of the program tests.  Well-formed -- the assertion logic expresses
-    it -- which is the same situation as NormalDisk.v. *)
+Definition nb_z1 : RealProgramVar := real_program_var "nb_z1".
+Definition nb_z3 : RealProgramVar := real_program_var "nb_z3".
+Definition nb_z2 : RealProgramVar := real_program_var "nb_z2".
+Definition nb_z4 : RealProgramVar := real_program_var "nb_z4".
+
+Definition nb_ex (px cx : R) : Term :=
+  <{ ($(px) + nb_z1) + $(nb_minus_one) * ($(cx) + nb_z3) }>.
+Definition nb_ey (py cy : R) : Term :=
+  <{ ($(py) + nb_z2) + $(nb_minus_one) * ($(cy) + nb_z4) }>.
+
+(** The L1-ball probability: [|ex| + |ey| < 1] iff all four sign
+    combinations [+-ex +- ey] are below [1]. *)
 Definition nb_construct (px py cx cy b : R) : PConstruct :=
-  [[ integral nb_n1 ~ $(nb_noise b),
-     integral nb_n3 ~ $(nb_noise b),
-     integral nb_n2 ~ $(nb_noise b),
-     integral nb_n4 ~ $(nb_noise b),
-     indicator[ ($(nb_dx px cx) < 1) /\ ($(nb_dy py cy) < 1) ] ]].
+  [[ integral nb_z1 ~ $(nb_noise b),
+     integral nb_z3 ~ $(nb_noise b),
+     integral nb_z2 ~ $(nb_noise b),
+     integral nb_z4 ~ $(nb_noise b),
+     indicator[ (($(nb_ex px cx) + $(nb_ey py cy)) < 1)
+                /\ (($(nb_ex px cx) + $(nb_minus_one) * $(nb_ey py cy)) < 1)
+                /\ (($(nb_minus_one) * $(nb_ex px cx) + $(nb_ey py cy)) < 1)
+                /\ (($(nb_minus_one) * $(nb_ex px cx)
+                     + $(nb_minus_one) * $(nb_ey py cy)) < 1) ] ]].
 
-(** * The open statement
+(** * The open statement (unproved target)
 
-    STATED, NOT PROVED.  [r] is the L1-ball probability; see the header for
-    why it is out of reach and for the [L1 + Laplace] variant that is not. *)
-Definition nb_target (px py cx cy b r : R) : Prop :=
-  {{ Pr[true] = 1 }}
+    Both branches of each [if] carry mass here (the guards test the
+    perturbed differences), so [HIfEq] produces a sum of two auxiliary
+    logic variables, each equal to an expectation; [HElimv] cannot remove
+    them while they occur in the postcondition, and CPHL has no other rule
+    that eliminates them. *)
+Definition nb_target (px py cx cy b : R) (eta : PFormula) : Prop :=
+  {{ $(eta) }}
     $(nb_prog px py cx cy b)
-  {{ Pr[nb_inside] = $(r) }}.
+  {{ Pr[nb_inside] = E[ $(nb_construct px py cx cy b) ] }}.
