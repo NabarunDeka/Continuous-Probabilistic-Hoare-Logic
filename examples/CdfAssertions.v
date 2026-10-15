@@ -24,6 +24,7 @@ From Stdlib Require Import Reals Lra.
 Require Import MeasureIntegration CPHL.
 Require Import CPHLFacts.ConstructFacts CPHLFacts.CalculationFacts.
 Require Import CdfLibraryFacts.
+Require Import SampleBeforeLoop.
 Require Import CPHLFacts.ExponentialIntegrals.
 
 Open Scope R_scope.
@@ -413,4 +414,42 @@ Proof.
   rewrite q_eval_indicatorE.
   rewrite (real_indicator_extensional _ (P r)) by apply HP.
   reflexivity.
+Qed.
+
+(** * Using state-logic validity facts
+
+    [valid_at_point] instantiates a valid formula at the unit point mass;
+    [valid_unit_eq] reads off a hypothesis [Pr[true] = 1 -> E[q] = F] at a
+    unit-mass state.  These are the only bridges from valid assertions to
+    real numbers. *)
+
+Lemma point_unit_mass :
+  psatisfies (point_pstate demo_valuation)
+    (p_eq (PExpect (QIndicator c_true)) (PConst 1)).
+Proof.
+  apply psatisfies_p_eq; cbn [pterm_eval].
+  rewrite point_pstate_expect, q_eval_indicatorE.
+  apply real_indicator_true; cbn [c_true satisfies]; tauto.
+Qed.
+
+Lemma valid_at_point :
+  forall eta : PFormula,
+    pformula_valid eta -> psatisfies (point_pstate demo_valuation) eta.
+Proof. intros eta H; exact (H _ (point_admissible demo_valuation)). Qed.
+
+(** A hypothesis [Pr[true] = 1 -> E[q] = F], read at a unit-mass state. *)
+Lemma valid_unit_eq :
+  forall (ps : Pstate) (q : PConstruct) (F : R),
+    pstate_admissible ps ->
+    expectation (pstate_measure ps) (q_eval (QIndicator c_true)) = 1 ->
+    pformula_valid
+      (PFImpl (p_eq (PExpect (QIndicator c_true)) (PConst 1))
+              (p_eq (PExpect q) (PConst F))) ->
+    expectation (pstate_measure ps) (q_eval q) = F.
+Proof.
+  intros ps q F Hadm Hmass Hvalid.
+  pose proof (Hvalid ps Hadm) as H; cbn [psatisfies] in H.
+  assert (Hone : psatisfies ps (p_eq (PExpect (QIndicator c_true)) (PConst 1)))
+    by (apply psatisfies_p_eq; cbn [pterm_eval]; exact Hmass).
+  specialize (H Hone); apply psatisfies_p_eq in H; cbn [pterm_eval] in H; exact H.
 Qed.

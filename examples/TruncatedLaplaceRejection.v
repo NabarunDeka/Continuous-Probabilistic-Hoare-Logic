@@ -148,38 +148,6 @@ Definition t4_prog (mu bb a c : R) : Cmd :=
 Definition t4_accepted (t : R) : PConstruct :=
   [[ indicator[$(t4_below t) /\ ~ $(t4_guard)] ]].
 
-(** * The CDF, as a state-logic formula *)
-
-Definition t4_cdf_rate (mu bb u F : R) : PFormula :=
-  [[ Pr[true] = 1 ->
-     E[ integral t4_z ~ laplace ( $(mu), $(bb) ), indicator[t4_z <= $(u)] ] = $(F) ]].
-
-(** Evaluating the CDF formula at a point mass pins [F] down. *)
-Lemma t4_cdf_value :
-  forall mu bb u F : R,
-    0 < bb ->
-    pformula_valid (t4_cdf_rate mu bb u F) ->
-    F = lap_below mu bb u.
-Proof.
-  intros mu bb u F Hb Hvalid.
-  set (ps0 := point_pstate demo_valuation).
-  pose proof (Hvalid ps0 (point_admissible demo_valuation)) as H.
-  unfold t4_cdf_rate in H; cbn [psatisfies] in H.
-  assert (Hone : psatisfies ps0 (p_eq (PExpect (QIndicator c_true)) (PConst 1))).
-  { apply psatisfies_p_eq; cbn [pterm_eval]; unfold ps0.
-    rewrite point_pstate_expect, q_eval_indicatorE.
-    apply real_indicator_true; cbn [c_true satisfies]; tauto. }
-  specialize (H Hone).
-  apply psatisfies_p_eq in H; cbn [pterm_eval] in H.
-  unfold ps0 in H.
-  rewrite point_pstate_expect in H.
-  rewrite (q_eval_laplace_indicator t4_z mu bb _ (fun z => (z <= u)%R)) in H.
-  - rewrite <- H.
-    exact (lap_atmost_below mu bb Hb u).
-  - exact Hb.
-  - intro z; cbn [satisfies]; rewrite update_real_same; reflexivity.
-Qed.
-
 (** * Certificate data.  One region: the guard itself. *)
 
 Definition t4_regions (_ : nat) : CFormula := t4_guard.
@@ -253,12 +221,130 @@ Proof.
     tauto.
 Qed.
 
-(** * The body premise *)
+(** * The CDF, as a state-logic formula *)
+
+Definition t4_cdf_q (mu bb u : R) : PConstruct :=
+  [[ integral t4_z ~ laplace ( $(mu), $(bb) ), indicator[t4_z <= $(u)] ]].
+
+Definition t4_cdf_rate (mu bb u F : R) : PFormula :=
+  [[ Pr[true] = 1 -> E[$(t4_cdf_q mu bb u)] = $(F) ]].
+
+(** * Validity facts about the logic's terms (the oracle)
+
+    These relate expectations of constructs to one another; real integrals
+    appear only in their proofs. *)
+
+Lemma t4_cdf_q_eval :
+  forall (mu bb u : R) (v : state),
+    0 < bb -> q_eval (t4_cdf_q mu bb u) v = lap_below mu bb u.
+Proof.
+  intros mu bb u v Hb.
+  unfold t4_cdf_q.
+  rewrite (q_eval_laplace_indicator t4_z mu bb _ (fun z => z <= u)).
+  - exact (lap_atmost_below mu bb Hb u).
+  - exact Hb.
+  - intro z; cbn [satisfies]; rewrite update_real_same; reflexivity.
+Qed.
+
+Lemma t4_cdf_expect :
+  forall (mu bb u : R) (ps : Pstate),
+    0 < bb ->
+    expectation (pstate_measure ps) (q_eval (t4_cdf_q mu bb u)) =
+    lap_below mu bb u * expectation (pstate_measure ps) (q_eval (QIndicator c_true)).
+Proof.
+  intros mu bb u ps Hb.
+  apply expect_const_construct; intro v; apply t4_cdf_q_eval; exact Hb.
+Qed.
+
+(** Rejection mass: everything outside [[a, c)]. *)
+Lemma t4_reject_expect :
+  forall (mu bb a c : R) (ps : Pstate),
+    0 < bb -> a <= c ->
+    expectation (pstate_measure ps)
+      (q_eval [[ integral t4_x ~ $(t4_noise mu bb), indicator[$(t4_reject a c)] ]]) =
+    expectation (pstate_measure ps) (q_eval (QIndicator c_true)) -
+    expectation (pstate_measure ps) (q_eval (t4_cdf_q mu bb c)) +
+    expectation (pstate_measure ps) (q_eval (t4_cdf_q mu bb a)).
+Proof.
+  intros mu bb a c ps Hb Hac.
+  rewrite (expect_const_construct _ _ (lap_below mu bb a + (1 - lap_below mu bb c)))
+    by (intro v; apply t4_integral_reject; assumption).
+  rewrite !t4_cdf_expect by exact Hb.
+  ring.
+Qed.
+
+(** Accepted mass below [t]: the window [[a, t)]. *)
+Lemma t4_accept_expect :
+  forall (mu bb a c t : R) (ps : Pstate),
+    0 < bb -> a <= t -> t <= c ->
+    expectation (pstate_measure ps)
+      (q_eval [[ integral t4_x ~ $(t4_noise mu bb),
+                 indicator[$(t4_below t) /\ (~ $(t4_reject a c))] ]]) =
+    expectation (pstate_measure ps) (q_eval (t4_cdf_q mu bb t)) -
+    expectation (pstate_measure ps) (q_eval (t4_cdf_q mu bb a)).
+Proof.
+  intros mu bb a c t ps Hb Hat Htc.
+  rewrite (expect_const_construct _ _ (lap_below mu bb t - lap_below mu bb a))
+    by (intro v; apply t4_integral_accept; assumption).
+  rewrite !t4_cdf_expect by exact Hb.
+  ring.
+Qed.
+
+(** The logic's CDF is strictly increasing on [[a, t]] and nondecreasing on
+    [[t, c]], on unit-mass states. *)
+Lemma t4_cdf_order_valid :
+  forall mu bb a c t : R,
+    0 < bb -> a < t -> t <= c ->
+    pformula_valid
+      [[ Pr[true] = 1 ->
+         E[$(t4_cdf_q mu bb a)] < E[$(t4_cdf_q mu bb t)] /\
+         E[$(t4_cdf_q mu bb t)] <= E[$(t4_cdf_q mu bb c)] ]].
+Proof.
+  intros mu bb a c t Hb Hat Htc ps Hadm; cbn [psatisfies]; intro Hm.
+  apply psatisfies_p_eq in Hm; cbn [pterm_eval] in Hm.
+  pose proof (lap_below_window mu bb a t Hb (Rlt_le _ _ Hat)) as Hat'.
+  pose proof (lap_window_pos mu bb a t Hb Hat) as Hpos.
+  pose proof (lap_below_window mu bb t c Hb Htc) as Htc'.
+  pose proof (lap_window_nonneg mu bb t c Hb) as Hnn.
+  apply psatisfies_p_and; split; cbn [psatisfies pterm_eval p_lt p_not];
+    rewrite !t4_cdf_expect by exact Hb; rewrite Hm.
+  - intro H; lra.
+  - lra.
+Qed.
+
+(** The validity facts, read at the unit point mass, order the parameters. *)
+Lemma t4_F_order :
+  forall mu bb a c t Fa Fc Ft : R,
+    0 < bb -> a < t -> t <= c ->
+    pformula_valid (t4_cdf_rate mu bb a Fa) ->
+    pformula_valid (t4_cdf_rate mu bb c Fc) ->
+    pformula_valid (t4_cdf_rate mu bb t Ft) ->
+    Fa < Ft /\ Ft <= Fc.
+Proof.
+  intros mu bb a c t Fa Fc Ft Hb Hat Htc Ha Hc Ht.
+  pose proof (valid_at_point _ (t4_cdf_order_valid mu bb a c t Hb Hat Htc)) as Hr.
+  cbn [psatisfies] in Hr; specialize (Hr point_unit_mass).
+  apply psatisfies_p_and in Hr; destruct Hr as [H1 H2].
+  cbn [psatisfies pterm_eval p_lt p_not] in H1, H2.
+  pose proof point_unit_mass as Hm; apply psatisfies_p_eq in Hm; cbn [pterm_eval] in Hm.
+  pose proof (point_admissible demo_valuation) as Hadm.
+  rewrite (valid_unit_eq _ _ Fa Hadm Hm Ha), (valid_unit_eq _ _ Ft Hadm Hm Ht) in H1.
+  rewrite (valid_unit_eq _ _ Ft Hadm Hm Ht), (valid_unit_eq _ _ Fc Hadm Hm Hc) in H2.
+  split; [apply Rnot_le_lt; exact H1 | exact H2].
+Qed.
+
+(** * The body premise
+
+    After the fresh sample, rejection has mass [1 - (Fc - Fa)] and acceptance
+    below [t] has mass [Ft - Fa]: the CDF hypotheses are read at the current
+    state. *)
 
 Lemma t4_body_step :
   forall mu bb a c t Fa Fc Ft : R,
     0 < bb -> a <= t -> t <= c ->
-    lap_below mu bb a = Fa -> lap_below mu bb c = Fc -> lap_below mu bb t = Ft ->
+    pformula_valid (t4_cdf_rate mu bb a Fa) ->
+    pformula_valid (t4_cdf_rate mu bb c Fc) ->
+    pformula_valid (t4_cdf_rate mu bb t Ft) ->
     forall i : nat,
       (i < 1)%nat ->
       {{ $(p_concentrated_mass (t4_regions i) [[ 1 ]]) }}
@@ -266,7 +352,7 @@ Lemma t4_body_step :
       {{ $(while_body_post 1 t4_regions (t4_transitions Fa Fc i) t4_guard
              (t4_q t) (t4_exits Fa Ft i)) }}.
 Proof.
-  intros mu bb a c t Fa Fc Ft Hb Hat Htc HFa HFc HFt i Hi.
+  intros mu bb a c t Fa Fc Ft Hb Hat Htc Ha Hc Ht i Hi.
   assert (Hac : a <= c) by lra.
   unfold t4_body.
   eapply HSeq with
@@ -282,6 +368,9 @@ Proof.
       destruct Hpre as [_ Hmass].
       apply psatisfies_p_eq in Hmass.
       cbn [pterm_eval] in Hmass.
+      pose proof (valid_unit_eq ps _ Fa Hadm Hmass Ha) as HFa.
+      pose proof (valid_unit_eq ps _ Fc Hadm Hmass Hc) as HFc.
+      pose proof (valid_unit_eq ps _ Ft Hadm Hmass Ht) as HFt.
       unfold while_body_post, t4_q, t4_regions, t4_guard, t4_transitions,
         t4_exits.
       cbn [finite_p_and condition_pconstruct condition_pconstruct_fuel
@@ -296,21 +385,20 @@ Proof.
              pconstruct_size subst_bool_cformula].
         rewrite !bpv_eq_dec_refl.
         cbn [sample_pterm pterm_eval].
-        rewrite (t3_expect_const ps _ (1 - (Fc - Fa))%R Hmass);
-          [reflexivity |].
-        intro v.
-        transitivity (lap_below mu bb a + (1 - lap_below mu bb c));
-          [exact (t4_integral_reject mu bb a c v Hb Hac) | rewrite HFa, HFc; ring].
+        transitivity
+          (expectation (pstate_measure ps) (q_eval (QIndicator c_true)) -
+           expectation (pstate_measure ps) (q_eval (t4_cdf_q mu bb c)) +
+           expectation (pstate_measure ps) (q_eval (t4_cdf_q mu bb a)));
+          [exact (t4_reject_expect mu bb a c ps Hb Hac) | rewrite Hmass, HFa, HFc; ring].
       * apply psatisfies_p_eq.
         cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
              pconstruct_size subst_bool_cformula t4_below c_and c_not].
         rewrite !bpv_eq_dec_refl.
         cbn [sample_pterm pterm_eval].
-        rewrite (t3_expect_const ps _ (Ft - Fa)%R Hmass);
-          [reflexivity |].
-        intro v.
-        transitivity (lap_below mu bb t - lap_below mu bb a);
-          [exact (t4_integral_accept mu bb a c t v Hb Hat Htc) | rewrite HFa, HFt; ring].
+        transitivity
+          (expectation (pstate_measure ps) (q_eval (t4_cdf_q mu bb t)) -
+           expectation (pstate_measure ps) (q_eval (t4_cdf_q mu bb a)));
+          [exact (t4_accept_expect mu bb a c t ps Hb Hat Htc) | rewrite HFa, HFt; ring].
     + intros ps Hadm _.
       refine (p_almost_sure_of_pointwise _ _ ps Hadm).
       intro v.
@@ -325,20 +413,16 @@ Qed.
 Lemma t4_loop_derivable :
   forall mu bb a c t Fa Fc Ft : R,
     0 < bb -> a < t -> t <= c ->
-    lap_below mu bb a = Fa -> lap_below mu bb c = Fc -> lap_below mu bb t = Ft ->
+    pformula_valid (t4_cdf_rate mu bb a Fa) ->
+    pformula_valid (t4_cdf_rate mu bb c Fc) ->
+    pformula_valid (t4_cdf_rate mu bb t Ft) ->
     {{ $(p_concentrated_mass (t4_regions 0) [[ t4_y ]]) }}
       $(t4_loop mu bb a c)
     {{ E[$(condition_pconstruct (t4_q t) <{ ~ $(t4_guard) }>)]
          = $(t4_solution Fa Fc Ft 0) * t4_y }}.
 Proof.
-  intros mu bb a c t Fa Fc Ft Hb Hat Htc HFa HFc HFt.
-  (* The window masses: [Ft - Fa > 0] and [Fc - Ft >= 0]. *)
-  assert (Hn : 0 < Ft - Fa).
-  { rewrite <- HFa, <- HFt, (lap_below_window mu bb a t Hb (Rlt_le _ _ Hat)).
-    pose proof (lap_window_pos mu bb a t Hb Hat); lra. }
-  assert (Hm : 0 <= Fc - Ft).
-  { rewrite <- HFt, <- HFc, (lap_below_window mu bb t c Hb Htc).
-    pose proof (lap_window_nonneg mu bb t c Hb); lra. }
+  intros mu bb a c t Fa Fc Ft Hb Hat Htc Ha Hc Ht.
+  destruct (t4_F_order mu bb a c t Fa Fc Ft Hb Hat Htc Ha Hc Ht) as [Hn Hm].
   eapply HWhile with
     (m := 1%nat) (k := 0%nat)
     (regions := t4_regions) (solution := t4_solution Fa Fc Ft)
@@ -350,7 +434,7 @@ Proof.
     intros i Hi v; cbn [satisfies]; tauto.
   - unfold while_regions_disjoint; intros i j Hi Hj; lia.
   - unfold while_progress, t4_exits.
-    intros i Hi; left; exact Hn.
+    intros i Hi; left; lra.
   - intros i Hi; apply (t4_body_step mu bb a c t Fa Fc Ft); try assumption; lra.
   - unfold while_solution, t4_solution, t4_transitions, t4_exits.
     intros i Hi; cbn [finite_r_sum].
@@ -362,17 +446,19 @@ Proof.
         unfold Rdiv; rewrite Rmult_assoc, Rinv_l by lra; lra.
 Qed.
 
-(** * The whole sampler, for given real CDF values *)
+(** * The headline triple, with the CDF written in the logic *)
 
-Lemma t4_prog_rate :
+Theorem t4_correct :
   forall mu bb a c t Fa Fc Ft : R,
     0 < bb -> a < t -> t <= c ->
-    lap_below mu bb a = Fa -> lap_below mu bb c = Fc -> lap_below mu bb t = Ft ->
+    pformula_valid (t4_cdf_rate mu bb a Fa) ->
+    pformula_valid (t4_cdf_rate mu bb c Fc) ->
+    pformula_valid (t4_cdf_rate mu bb t Ft) ->
     {{ Pr[true] = t4_y }}
       $(t4_prog mu bb a c)
     {{ E[$(t4_accepted t)] = $((Ft - Fa) / (Fc - Fa)) * t4_y }}.
 Proof.
-  intros mu bb a c t Fa Fc Ft Hb Hat Htc HFa HFc HFt.
+  intros mu bb a c t Fa Fc Ft Hb Hat Htc Ha Hc Ht.
   rewrite <- t4_accepted_eq.
   unfold t4_prog.
   eapply HSeq with
@@ -396,22 +482,5 @@ Proof.
       * exact Hpre.
     + apply HBoolAssign.
     + intros ps Hadm; cbn [psatisfies]; tauto.
-  - exact (t4_loop_derivable mu bb a c t Fa Fc Ft Hb Hat Htc HFa HFc HFt).
-Qed.
-
-(** * The headline triple, with the CDF written in the logic *)
-
-Theorem t4_correct :
-  forall mu bb a c t Fa Fc Ft : R,
-    0 < bb -> a < t -> t <= c ->
-    pformula_valid (t4_cdf_rate mu bb a Fa) ->
-    pformula_valid (t4_cdf_rate mu bb c Fc) ->
-    pformula_valid (t4_cdf_rate mu bb t Ft) ->
-    {{ Pr[true] = t4_y }}
-      $(t4_prog mu bb a c)
-    {{ E[$(t4_accepted t)] = $((Ft - Fa) / (Fc - Fa)) * t4_y }}.
-Proof.
-  intros mu bb a c t Fa Fc Ft Hb Hat Htc Ha Hc Ht.
-  apply t4_prog_rate; try assumption;
-    symmetry; apply t4_cdf_value; assumption.
+  - exact (t4_loop_derivable mu bb a c t Fa Fc Ft Hb Hat Htc Ha Hc Ht).
 Qed.

@@ -146,29 +146,149 @@ Proof.
   - intros Hz Hf; apply (Hf Hz); intro Hneg; apply Hneg; lra.
 Qed.
 
+(** * The CDF of the accepted value, as a state-logic formula
+
+    [G] is the CDF at [t] of an [exponential(1/b)] sample, written as an
+    integral of an indicator in the assertion logic. *)
+
+Definition t3_cdf_q (t b : R) : PConstruct :=
+  [[ integral t3_z ~ exponential ( $((/ b)%R) ), indicator[t3_z <= $(t)] ]].
+
+Definition t3_cdf (t b G : R) : PFormula :=
+  [[ Pr[true] = 1 -> E[$(t3_cdf_q t b)] = $(G) ]].
+
+(** * Validity facts about the logic's terms (the oracle)
+
+    These relate expectations of constructs to one another; real integrals
+    appear only in their proofs. *)
+
+Lemma t3_cdf_q_eval :
+  forall (t b : R) (v : state),
+    (0 <= t)%R -> (0 < b)%R ->
+    q_eval (t3_cdf_q t b) v = (1 - exp (- t / b))%R.
+Proof.
+  intros t b v Ht Hb.
+  unfold t3_cdf_q.
+  rewrite (q_eval_exponential_indicator t3_z (/ b) _ (fun z => (z <= t)%R)).
+  - rewrite exp_atmost_closed.
+    + f_equal; f_equal; field; lra.
+    + apply Rinv_0_lt_compat; exact Hb.
+    + exact Ht.
+  - apply Rinv_0_lt_compat; exact Hb.
+  - intro z; cbn [satisfies]; rewrite update_real_same; reflexivity.
+Qed.
+
+(** Rejection takes half of any measure. *)
+Lemma t3_reject_expect :
+  forall (b : R) (ps : Pstate),
+    (0 < b)%R ->
+    expectation (pstate_measure ps)
+      (q_eval [[ integral t3_x ~ $(t3_noise b), indicator[$(t3_neg)] ]]) =
+    ((1 / 2) * expectation (pstate_measure ps) (q_eval (QIndicator c_true)))%R.
+Proof.
+  intros b ps Hb.
+  apply expect_const_construct; intro v; apply t3_integral_reject; exact Hb.
+Qed.
+
+(** Acceptance above [t] takes half of the mass not below [t] under the
+    exponential CDF. *)
+Lemma t3_accept_expect :
+  forall (t b : R) (ps : Pstate),
+    (0 <= t)%R -> (0 < b)%R ->
+    expectation (pstate_measure ps)
+      (q_eval [[ integral t3_x ~ $(t3_noise b),
+                 indicator[$(t3_tail t) /\ (~ $(t3_neg))] ]]) =
+    ((expectation (pstate_measure ps) (q_eval (QIndicator c_true)) -
+      expectation (pstate_measure ps) (q_eval (t3_cdf_q t b))) / 2)%R.
+Proof.
+  intros t b ps Ht Hb.
+  rewrite (expect_const_construct _ _ (lap_above 0 b t))
+    by (intro v; apply t3_integral_accept; assumption).
+  rewrite (expect_const_construct _ (t3_cdf_q t b) (1 - exp (- t / b)))
+    by (intro v; apply t3_cdf_q_eval; assumption).
+  rewrite lap_above_closed by assumption.
+  field.
+Qed.
+
+(** The logic's CDF lies in [[0, 1)] on unit-mass states. *)
+Lemma t3_cdf_range_valid :
+  forall t b : R,
+    (0 <= t)%R -> (0 < b)%R ->
+    pformula_valid
+      [[ Pr[true] = 1 -> 0 <= E[$(t3_cdf_q t b)] /\ E[$(t3_cdf_q t b)] < 1 ]].
+Proof.
+  intros t b Ht Hb ps Hadm; cbn [psatisfies]; intro Hm.
+  apply psatisfies_p_eq in Hm; cbn [pterm_eval] in Hm.
+  assert (Hc : expectation (pstate_measure ps) (q_eval (t3_cdf_q t b)) =
+               (1 - exp (- t / b))%R).
+  { rewrite (expect_const_construct _ (t3_cdf_q t b) (1 - exp (- t / b)))
+      by (intro v; apply t3_cdf_q_eval; assumption).
+    rewrite Hm; ring. }
+  assert (He : (0 < exp (- t / b) <= 1)%R).
+  { split; [apply exp_pos |].
+    replace 1%R with (exp 0) by apply exp_0.
+    apply exp_le_compat.
+    assert (Hq : (0 <= t * / b)%R)
+      by (apply Rmult_le_pos; [exact Ht | left; apply Rinv_0_lt_compat; exact Hb]).
+    unfold Rdiv; lra. }
+  apply psatisfies_p_and; split; cbn [psatisfies pterm_eval p_lt p_not];
+    rewrite Hc.
+  - lra.
+  - intro H; lra.
+Qed.
+
+(** The logic's CDF at [0] is [0]. *)
+Lemma t3_cdf_zero_valid : forall b : R, (0 < b)%R -> pformula_valid (t3_cdf 0 b 0).
+Proof.
+  intros b Hb ps Hadm; cbn [psatisfies]; intro Hm.
+  apply psatisfies_p_eq; cbn [pterm_eval].
+  rewrite (expect_const_construct _ (t3_cdf_q 0 b) (1 - exp (- 0 / b)))
+    by (intro v; apply t3_cdf_q_eval; lra).
+  replace (- 0 / b)%R with 0%R by (field; lra).
+  rewrite exp_0; ring.
+Qed.
+
+(** Validity of the range fact and of the CDF hypothesis, read at the unit
+    point mass, bound the parameter [G]. *)
+Lemma t3_G_range :
+  forall t b G : R,
+    (0 <= t)%R -> (0 < b)%R ->
+    pformula_valid (t3_cdf t b G) -> (0 <= G < 1)%R.
+Proof.
+  intros t b G Ht Hb HG.
+  pose proof (valid_at_point _ (t3_cdf_range_valid t b Ht Hb)) as Hr.
+  cbn [psatisfies] in Hr; specialize (Hr point_unit_mass).
+  apply psatisfies_p_and in Hr; destruct Hr as [H0 H1].
+  cbn [psatisfies pterm_eval p_lt p_not] in H0, H1.
+  pose proof point_unit_mass as Hm; apply psatisfies_p_eq in Hm; cbn [pterm_eval] in Hm.
+  rewrite (valid_unit_eq _ (t3_cdf_q t b) G (point_admissible demo_valuation) Hm HG) in H0, H1.
+  split; [exact H0 | apply Rnot_le_lt; exact H1].
+Qed.
+
 (** * The body premise
 
-    The sample is fresh, so both expectations after it are constants:
-    [1/2] for rejection and [r/2] for acceptance above [t]. *)
+    The sample is fresh, so both expectations after it are fixed:
+    [1/2] for rejection and [(1 - G)/2] for acceptance above [t], the latter
+    read off the CDF hypothesis at the current state. *)
 
 Lemma t3_body_step :
-  forall t b r : R,
+  forall t b G : R,
     (0 <= t)%R -> (0 < b)%R ->
-    lap_above 0 b t = (r / 2)%R ->
+    pformula_valid (t3_cdf t b G) ->
     forall i : nat,
       (i < 1)%nat ->
       {{ $(p_concentrated_mass (t3_regions i) [[ 1 ]]) }}
         $(t3_body b)
       {{ $(while_body_post 1 t3_regions (t3_transitions i) t3_guard (t3_q t)
-             (t3_exits r i)) }}.
+             (t3_exits (1 - G) i)) }}.
 Proof.
-  intros t b r Ht Hb Hexit i Hi.
+  intros t b G Ht Hb HG i Hi.
   unfold t3_body.
   eapply HSeq with
     (eta2 :=
        subst_bool_pformula t3_retry t3_neg
          (while_body_post 1 t3_regions (t3_transitions i) t3_guard (t3_q t)
-            (t3_exits r i))).
+            (t3_exits (1 - G) i))).
   - apply HRealSample.
     + intros ps Hadm.
       cbn [psatisfies].
@@ -177,6 +297,7 @@ Proof.
       destruct Hpre as [_ Hmass].
       apply psatisfies_p_eq in Hmass.
       cbn [pterm_eval] in Hmass.
+      pose proof (valid_unit_eq ps (t3_cdf_q t b) G Hadm Hmass HG) as HGps.
       unfold while_body_post, t3_q, t3_regions, t3_guard, t3_transitions,
         t3_exits.
       cbn [finite_p_and condition_pconstruct condition_pconstruct_fuel
@@ -191,15 +312,17 @@ Proof.
              pconstruct_size subst_bool_cformula].
         rewrite !bpv_eq_dec_refl.
         cbn [sample_pterm pterm_eval].
-        rewrite (t3_expect_const ps _ (1 / 2)%R Hmass);
-          [reflexivity | intro v; apply t3_integral_reject; exact Hb].
+        transitivity ((1 / 2) * expectation (pstate_measure ps)
+                                  (q_eval (QIndicator c_true)))%R;
+          [exact (t3_reject_expect b ps Hb) | rewrite Hmass; ring].
       * apply psatisfies_p_eq.
         cbn [subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
              pconstruct_size subst_bool_cformula t3_tail c_and c_not].
         rewrite !bpv_eq_dec_refl.
         cbn [sample_pterm pterm_eval].
-        rewrite (t3_expect_const ps _ (r / 2)%R Hmass);
-          [reflexivity | intro v; rewrite <- Hexit; apply t3_integral_accept; assumption].
+        transitivity ((expectation (pstate_measure ps) (q_eval (QIndicator c_true)) -
+                       expectation (pstate_measure ps) (q_eval (t3_cdf_q t b))) / 2)%R;
+          [exact (t3_accept_expect t b ps Ht Hb) | rewrite Hmass, HGps; field].
     + intros ps Hadm _.
       refine (p_almost_sure_of_pointwise _ _ ps Hadm).
       intro v.
@@ -212,20 +335,20 @@ Qed.
 (** * The loop *)
 
 Lemma t3_loop_derivable :
-  forall t b r : R,
+  forall t b G : R,
     (0 <= t)%R -> (0 < b)%R ->
-    lap_above 0 b t = (r / 2)%R ->
-    (0 < r <= 1)%R ->
+    pformula_valid (t3_cdf t b G) ->
     {{ $(p_concentrated_mass (t3_regions 0) [[ t3_y ]]) }}
       $(t3_loop b)
     {{ E[$(condition_pconstruct (t3_q t) <{ ~ $(t3_guard) }>)]
-         = $(t3_solution r 0) * t3_y }}.
+         = $(t3_solution (1 - G) 0) * t3_y }}.
 Proof.
-  intros t b r Ht Hb Hexit Hr.
+  intros t b G Ht Hb HG.
+  pose proof (t3_G_range t b G Ht Hb HG) as HGr.
   eapply HWhile with
     (m := 1%nat) (k := 0%nat)
-    (regions := t3_regions) (solution := t3_solution r)
-    (exits := t3_exits r) (transitions := t3_transitions).
+    (regions := t3_regions) (solution := t3_solution (1 - G))
+    (exits := t3_exits (1 - G)) (transitions := t3_transitions).
   - lia.
   - unfold while_regions_cover, cformula_valid, t3_regions.
     intro v; cbn [finite_c_or c_or c_not satisfies]; tauto.
@@ -234,23 +357,22 @@ Proof.
   - unfold while_regions_disjoint; intros i j Hi Hj; lia.
   - unfold while_progress, t3_exits.
     intros i Hi; left; lra.
-  - intros i Hi; apply (t3_body_step t b r); assumption.
+  - intros i Hi; apply (t3_body_step t b G); assumption.
   - unfold while_solution, t3_solution, t3_transitions, t3_exits.
     intros i Hi; cbn [finite_r_sum]; split; lra.
 Qed.
 
-(** * The whole sampler, for a given exit rate *)
+(** * The headline triple *)
 
-Lemma t3_prog_rate :
-  forall t b r : R,
+Theorem t3_correct :
+  forall t b G : R,
     (0 <= t)%R -> (0 < b)%R ->
-    lap_above 0 b t = (r / 2)%R ->
-    (0 < r <= 1)%R ->
+    pformula_valid (t3_cdf t b G) ->
     {{ Pr[true] = t3_y }}
       $(t3_prog b)
-    {{ E[$(t3_accepted t)] = $(r) * t3_y }}.
+    {{ E[$(t3_accepted t)] = $(1 - G) * t3_y }}.
 Proof.
-  intros t b r Ht Hb Hexit Hr.
+  intros t b G Ht Hb HG.
   rewrite <- t3_accepted_eq.
   unfold t3_prog.
   eapply HSeq with
@@ -274,78 +396,17 @@ Proof.
       * exact Hpre.
     + apply HBoolAssign.
     + intros ps Hadm; cbn [psatisfies]; tauto.
-  - exact (t3_loop_derivable t b r Ht Hb Hexit Hr).
+  - exact (t3_loop_derivable t b G Ht Hb HG).
 Qed.
 
-(** * The CDF of the accepted value, as a state-logic formula
-
-    [G] is the CDF at [t] of an [exponential(1/b)] sample, written as an
-    integral of an indicator in the assertion logic. *)
-
-Definition t3_cdf (t b G : R) : PFormula :=
-  [[ Pr[true] = 1 ->
-     E[ integral t3_z ~ exponential ( $((/ b)%R) ), indicator[t3_z <= $(t)] ] = $(G) ]].
-
-(** Evaluating the CDF formula at a point mass pins [G] down. *)
-Lemma t3_cdf_value :
-  forall t b G : R,
-    (0 <= t)%R -> (0 < b)%R ->
-    pformula_valid (t3_cdf t b G) ->
-    G = (1 - exp (- t / b))%R.
-Proof.
-  intros t b G Ht Hb Hvalid.
-  set (ps0 := point_pstate demo_valuation).
-  pose proof (Hvalid ps0 (point_admissible demo_valuation)) as H.
-  unfold t3_cdf in H; cbn [psatisfies] in H.
-  assert (Hone : psatisfies ps0 (p_eq (PExpect (QIndicator c_true)) (PConst 1))).
-  { apply psatisfies_p_eq; cbn [pterm_eval]; unfold ps0.
-    rewrite point_pstate_expect, q_eval_indicatorE.
-    apply real_indicator_true; cbn [c_true satisfies]; tauto. }
-  specialize (H Hone).
-  apply psatisfies_p_eq in H; cbn [pterm_eval] in H.
-  unfold ps0 in H.
-  rewrite point_pstate_expect in H.
-  rewrite (q_eval_exponential_indicator t3_z (/ b) _ (fun z => (z <= t)%R)) in H.
-  - rewrite exp_atmost_closed in H.
-    + rewrite <- H; f_equal; f_equal; field; lra.
-    + apply Rinv_0_lt_compat; exact Hb.
-    + exact Ht.
-  - apply Rinv_0_lt_compat; exact Hb.
-  - intro z; cbn [satisfies]; rewrite update_real_same; reflexivity.
-Qed.
-
-(** * The headline triple *)
-
-Theorem t3_correct :
-  forall t b G : R,
-    (0 <= t)%R -> (0 < b)%R ->
-    pformula_valid (t3_cdf t b G) ->
-    {{ Pr[true] = t3_y }}
-      $(t3_prog b)
-    {{ E[$(t3_accepted t)] = $(1 - G) * t3_y }}.
-Proof.
-  intros t b G Ht Hb Hvalid.
-  pose proof (t3_cdf_value t b G Ht Hb Hvalid) as HG.
-  apply t3_prog_rate; [exact Ht | exact Hb | |].
-  - rewrite lap_above_closed by assumption; rewrite HG; field.
-  - rewrite HG; replace (1 - (1 - exp (- t / b)))%R with (exp (- t / b)) by ring.
-    split; [apply exp_pos |].
-    replace 1%R with (exp 0) by apply exp_0.
-    apply exp_le_compat.
-    assert (Hq : (0 <= t * / b)%R)
-      by (apply Rmult_le_pos; [exact Ht | left; apply Rinv_0_lt_compat; exact Hb]).
-    unfold Rdiv; lra.
-Qed.
-
-(** At [t = 0] the rate is one: the sampler terminates almost surely. *)
+(** At [t = 0] the CDF is [0]: the sampler terminates almost surely. *)
 Corollary t3_terminates :
   forall b : R,
     (0 < b)%R ->
     {{ Pr[true] = t3_y }} $(t3_prog b) {{ E[$(t3_accepted 0)] = $(1%R) * t3_y }}.
 Proof.
   intros b Hb.
-  apply t3_prog_rate; [apply Rle_refl | exact Hb | | lra].
-  rewrite lap_above_closed by (exact Hb || apply Rle_refl).
-  replace (- 0 / b)%R with 0%R by (field; lra).
-  rewrite exp_0; field.
+  pose proof (t3_correct 0 b 0 (Rle_refl 0) Hb (t3_cdf_zero_valid b Hb)) as H.
+  replace (1 - 0)%R with 1%R in H by ring.
+  exact H.
 Qed.

@@ -370,62 +370,11 @@ Proof.
   intro Hle; lra.
 Qed.
 
-(** * The folded sampler, for a given survival probability [r] *)
+(** * The folded sampler
 
-Lemma ef_prog_rate :
-  forall t b r : R,
-    0 <= t -> 0 < b ->
-    exp (- t / b) = r ->
-    {{ Pr[true] = 1 }}
-      $(ef_prog b)
-    {{ Pr[$(ef_out t)] = $(1 - r) }}.
-Proof.
-  intros t b r Ht Hb Hr.
-  unfold ef_prog.
-  set (P :=
-    if_precondition
-      (svt_event_probability (ef_half r) (ef_src_lo t))
-      (svt_event_probability (ef_half r) (ef_src_hi t))
-      (FProgBool ef_neg)).
-  set (P2 := subst_bool_pformula ef_neg ef_sign P).
-  eapply HConseq with
-    (eta1 := sample_pformula ef_x (ef_noise b) P2)
-    (eta2 := svt_event_probability (ef_half r + ef_half r) (ef_out t)).
-  - (* the unit-mass precondition entails the sampled formula *)
-    intros ps Hadm.
-    cbn [psatisfies]; intro Hpre.
-    apply psatisfies_p_eq in Hpre.
-    cbn [pterm_eval] in Hpre.
-    unfold P2, P, if_precondition, svt_event_probability.
-    rewrite !ef_condition_p_eq_const.
-    rewrite ef_subst_p_and, !ef_subst_p_eq_const, ef_subst_lo, ef_subst_hi.
-    rewrite ef_sample_p_and, !ef_sample_p_eq_const.
-    apply psatisfies_p_and; split; apply psatisfies_p_eq;
-      cbn [pterm_eval].
-    + symmetry; apply t3_expect_const; [exact Hpre |].
-      intro v; rewrite <- Hr; apply ef_integral_lo; assumption.
-    + symmetry; apply t3_expect_const; [exact Hpre |].
-      intro v; rewrite <- Hr; apply ef_integral_hi; assumption.
-  - eapply HSeq with (eta2 := P2).
-    + apply HRealSample.
-      * intros ps Hadm; cbn [psatisfies]; intro H; exact H.
-      * apply ef_noise_valid_under; exact Hb.
-    + eapply HSeq with (eta2 := P).
-      * unfold P2; apply HBoolAssign.
-      * unfold P; apply ef_if_step.
-  - (* both halves carry the same mass, and they sum to [1 - r] *)
-    intros ps Hadm.
-    unfold svt_event_probability.
-    intro Hpost.
-    apply psatisfies_p_eq in Hpost.
-    cbn [pterm_eval] in Hpost.
-    apply psatisfies_p_eq.
-    cbn [pterm_eval].
-    unfold ef_half in Hpost.
-    lra.
-Qed.
-
-(** * The headline triple *)
+    Each half of the fold carries half of the exponential CDF [G].  The only
+    link between [G] and the program is the CDF hypothesis, read at the
+    current state inside the validity side condition. *)
 
 Theorem ef_correct :
   forall t b G : R,
@@ -435,9 +384,53 @@ Theorem ef_correct :
       $(ef_prog b)
     {{ Pr[$(ef_out t)] = $(G) }}.
 Proof.
-  intros t b G Ht Hb Hvalid.
-  pose proof (t3_cdf_value t b G Ht Hb Hvalid) as HG.
-  replace G with (1 - (1 - G))%R by ring.
-  apply ef_prog_rate; [exact Ht | exact Hb |].
-  rewrite HG; ring.
+  intros t b G Ht Hb HG.
+  unfold ef_prog.
+  set (P :=
+    if_precondition
+      (svt_event_probability (G / 2) (ef_src_lo t))
+      (svt_event_probability (G / 2) (ef_src_hi t))
+      (FProgBool ef_neg)).
+  set (P2 := subst_bool_pformula ef_neg ef_sign P).
+  eapply HConseq with
+    (eta1 := sample_pformula ef_x (ef_noise b) P2)
+    (eta2 := svt_event_probability (G / 2 + G / 2) (ef_out t)).
+  - (* validity: each half of the sampled mass is half the CDF *)
+    intros ps Hadm.
+    cbn [psatisfies]; intro Hpre.
+    apply psatisfies_p_eq in Hpre.
+    cbn [pterm_eval] in Hpre.
+    pose proof (valid_unit_eq ps (t3_cdf_q t b) G Hadm Hpre HG) as HGps.
+    assert (Hcdf : expectation (pstate_measure ps) (q_eval (t3_cdf_q t b)) =
+                   (1 - exp (- t / b))%R).
+    { rewrite (t3_expect_const ps _ (1 - exp (- t / b))%R Hpre); [reflexivity |].
+      intro v; apply t3_cdf_q_eval; assumption. }
+    unfold P2, P, if_precondition, svt_event_probability.
+    rewrite !ef_condition_p_eq_const.
+    rewrite ef_subst_p_and, !ef_subst_p_eq_const, ef_subst_lo, ef_subst_hi.
+    rewrite ef_sample_p_and, !ef_sample_p_eq_const.
+    apply psatisfies_p_and; split; apply psatisfies_p_eq;
+      cbn [pterm_eval].
+    + rewrite (t3_expect_const ps _ (ef_half (exp (- t / b))) Hpre)
+        by (intro v; apply ef_integral_lo; assumption).
+      unfold ef_half; rewrite <- HGps, Hcdf; field.
+    + rewrite (t3_expect_const ps _ (ef_half (exp (- t / b))) Hpre)
+        by (intro v; apply ef_integral_hi; assumption).
+      unfold ef_half; rewrite <- HGps, Hcdf; field.
+  - eapply HSeq with (eta2 := P2).
+    + apply HRealSample.
+      * intros ps Hadm; cbn [psatisfies]; intro H; exact H.
+      * apply ef_noise_valid_under; exact Hb.
+    + eapply HSeq with (eta2 := P).
+      * unfold P2; apply HBoolAssign.
+      * unfold P; apply ef_if_step.
+  - (* both halves together are the CDF *)
+    intros ps Hadm.
+    unfold svt_event_probability.
+    intro Hpost.
+    apply psatisfies_p_eq in Hpost.
+    cbn [pterm_eval] in Hpost.
+    apply psatisfies_p_eq.
+    cbn [pterm_eval].
+    lra.
 Qed.

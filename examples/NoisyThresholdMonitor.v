@@ -290,11 +290,135 @@ Proof.
   intro r; apply ntm_sat_right_exit; exact Hac.
 Qed.
 
+(** * The Laplace CDF, as a state-logic formula *)
+
+Definition ntm_cdf_q (mu bb u : R) : PConstruct :=
+  [[ integral ntm_z ~ laplace ( $(mu), $(bb) ), indicator[ntm_z <= $(u)] ]].
+
+Definition ntm_cdf (mu bb u F : R) : PFormula :=
+  [[ Pr[true] = 1 -> E[$(ntm_cdf_q mu bb u)] = $(F) ]].
+
+(** * Validity facts about the logic's terms (the oracle)
+
+    These relate expectations of constructs to one another; real integrals
+    appear only in their proofs. *)
+
+Lemma ntm_cdf_q_eval :
+  forall (mu bb u : R) (v : state),
+    (0 < bb)%R -> q_eval (ntm_cdf_q mu bb u) v = lap_below mu bb u.
+Proof.
+  intros mu bb u v Hb.
+  unfold ntm_cdf_q.
+  rewrite (q_eval_laplace_indicator ntm_z mu bb _ (fun z => (z <= u)%R)).
+  - exact (lap_atmost_below mu bb Hb u).
+  - exact Hb.
+  - intro z; cbn [satisfies]; rewrite update_real_same; reflexivity.
+Qed.
+
+Lemma ntm_cdf_expect :
+  forall (mu bb u : R) (ps : Pstate),
+    (0 < bb)%R ->
+    expectation (pstate_measure ps) (q_eval (ntm_cdf_q mu bb u)) =
+    (lap_below mu bb u * expectation (pstate_measure ps) (q_eval (QIndicator c_true)))%R.
+Proof.
+  intros mu bb u ps Hb.
+  apply expect_const_construct; intro v; apply ntm_cdf_q_eval; exact Hb.
+Qed.
+
+Lemma ntm_inside_expect :
+  forall (mu bb a c : R) (ps : Pstate),
+    (0 < bb)%R -> (a <= c)%R ->
+    expectation (pstate_measure ps)
+      (q_eval [[ integral ntm_x ~ $(ntm_noise mu bb), indicator[$(ntm_inside a c)] ]]) =
+    (expectation (pstate_measure ps) (q_eval (ntm_cdf_q mu bb c)) -
+     expectation (pstate_measure ps) (q_eval (ntm_cdf_q mu bb a)))%R.
+Proof.
+  intros mu bb a c ps Hb Hac.
+  rewrite (expect_const_construct _ _ (1 - lap_below mu bb a - lap_above mu bb c))
+    by (intro v; apply ntm_integral_inside; assumption).
+  rewrite !ntm_cdf_expect by exact Hb.
+  pose proof (lap_below_above mu bb Hb c) as Hs.
+  replace (lap_above mu bb c) with (1 - lap_below mu bb c)%R by lra.
+  ring.
+Qed.
+
+Lemma ntm_left_expect :
+  forall (mu bb a c : R) (ps : Pstate),
+    (0 < bb)%R -> (a <= c)%R ->
+    expectation (pstate_measure ps)
+      (q_eval [[ integral ntm_x ~ $(ntm_noise mu bb),
+                 indicator[$(ntm_below a) /\ (~ $(ntm_inside a c))] ]]) =
+    expectation (pstate_measure ps) (q_eval (ntm_cdf_q mu bb a)).
+Proof.
+  intros mu bb a c ps Hb Hac.
+  rewrite (expect_const_construct _ _ (lap_below mu bb a))
+    by (intro v; apply ntm_integral_left; assumption).
+  rewrite ntm_cdf_expect by exact Hb.
+  reflexivity.
+Qed.
+
+Lemma ntm_right_expect :
+  forall (mu bb a c : R) (ps : Pstate),
+    (0 < bb)%R -> (a <= c)%R ->
+    expectation (pstate_measure ps)
+      (q_eval [[ integral ntm_x ~ $(ntm_noise mu bb),
+                 indicator[(~ $(ntm_below a)) /\ (~ $(ntm_inside a c))] ]]) =
+    (expectation (pstate_measure ps) (q_eval (QIndicator c_true)) -
+     expectation (pstate_measure ps) (q_eval (ntm_cdf_q mu bb c)))%R.
+Proof.
+  intros mu bb a c ps Hb Hac.
+  rewrite (expect_const_construct _ _ (lap_above mu bb c))
+    by (intro v; apply ntm_integral_right; assumption).
+  rewrite ntm_cdf_expect by exact Hb.
+  pose proof (lap_below_above mu bb Hb c) as Hs.
+  replace (lap_above mu bb c) with (1 - lap_below mu bb c)%R by lra.
+  ring.
+Qed.
+
+(** On unit-mass states the logic's CDF is positive at [a] and below one at
+    [c]. *)
+Lemma ntm_cdf_range_valid :
+  forall mu bb a c : R,
+    (0 < bb)%R ->
+    pformula_valid
+      [[ Pr[true] = 1 ->
+         0 < E[$(ntm_cdf_q mu bb a)] /\ E[$(ntm_cdf_q mu bb c)] < 1 ]].
+Proof.
+  intros mu bb a c Hb ps Hadm; cbn [psatisfies]; intro Hm.
+  apply psatisfies_p_eq in Hm; cbn [pterm_eval] in Hm.
+  pose proof (ntm_lap_below_pos mu bb a Hb) as Hpa.
+  pose proof (lap_above_pos mu bb Hb c) as Hpc.
+  pose proof (lap_below_above mu bb Hb c) as Hs.
+  apply psatisfies_p_and; split; cbn [psatisfies pterm_eval p_lt p_not];
+    rewrite !ntm_cdf_expect by exact Hb; rewrite Hm.
+  - intro H; lra.
+  - intro H; lra.
+Qed.
+
+(** The validity facts, read at the unit point mass, bound the parameters. *)
+Lemma ntm_F_range :
+  forall mu bb a c Fa Fc : R,
+    (0 < bb)%R ->
+    pformula_valid (ntm_cdf mu bb a Fa) ->
+    pformula_valid (ntm_cdf mu bb c Fc) ->
+    (0 < Fa)%R /\ (Fc < 1)%R.
+Proof.
+  intros mu bb a c Fa Fc Hb Ha Hc.
+  pose proof (valid_at_point _ (ntm_cdf_range_valid mu bb a c Hb)) as Hr.
+  cbn [psatisfies] in Hr; specialize (Hr point_unit_mass).
+  apply psatisfies_p_and in Hr; destruct Hr as [H1 H2].
+  cbn [psatisfies pterm_eval p_lt p_not] in H1, H2.
+  pose proof point_unit_mass as Hm; apply psatisfies_p_eq in Hm; cbn [pterm_eval] in Hm.
+  pose proof (point_admissible demo_valuation) as Hadm.
+  rewrite (valid_unit_eq _ _ Fa Hadm Hm Ha) in H1.
+  rewrite (valid_unit_eq _ _ Fc Hadm Hm Hc) in H2.
+  split; apply Rnot_le_lt; assumption.
+Qed.
+
 (** * Certificate data
 
-    One region: the guard itself.  The exit masses [pL] (left) and [pR]
-    (right) are parameters; the mass that stays in the band is
-    [1 - pL - pR]. *)
+    One region: the guard itself.  The exit masses are [Fa] (left) and
+    [1 - Fc] (right); the mass that stays in the band is [Fc - Fa]. *)
 
 Definition ntm_regions (_ : nat) : CFormula := ntm_guard.
 
@@ -317,34 +441,34 @@ Proof. reflexivity. Qed.
 
 (** * The body premise, for either exit event
 
-    [q] selects the exit event and [p] is its post-sample expectation. *)
+    [q] selects the exit event and [p] is its post-sample expectation on
+    unit-mass states.  The band mass is read off the CDF hypotheses. *)
 
 Lemma ntm_body_step :
-  forall (mu bb a c pL pR p : R) (q : PConstruct),
+  forall (mu bb a c Fa Fc p : R) (q : PConstruct),
     (0 < bb)%R -> (a <= c)%R ->
-    lap_below mu bb a = pL ->
-    lap_above mu bb c = pR ->
-    (forall ps : Pstate,
-       expectation (pstate_measure ps) (q_eval (QIndicator c_true)) = 1%R ->
-       pterm_eval
-         (sample_pterm ntm_x (ntm_noise mu bb)
-            (subst_bool_pterm ntm_left (ntm_below a)
-               (subst_bool_pterm ntm_active (ntm_inside a c)
-                  (PExpect (condition_pconstruct q (c_not ntm_guard)))))) ps = p) ->
+    pformula_valid (ntm_cdf mu bb a Fa) ->
+    pformula_valid (ntm_cdf mu bb c Fc) ->
+    pformula_valid
+      [[ Pr[true] = 1 ->
+         $(sample_pterm ntm_x (ntm_noise mu bb)
+             (subst_bool_pterm ntm_left (ntm_below a)
+                (subst_bool_pterm ntm_active (ntm_inside a c)
+                   (PExpect (condition_pconstruct q (c_not ntm_guard)))))) = $(p) ]] ->
     forall i : nat,
       (i < 1)%nat ->
-      {{ $(p_concentrated_mass (ntm_regions i) (PConst 1)) }}
+      {{ $(p_concentrated_mass (ntm_regions i) [[ 1 ]]) }}
         $(ntm_body mu bb a c)
-      {{ $(while_body_post 1 ntm_regions (ntm_transitions pL pR i)
+      {{ $(while_body_post 1 ntm_regions (ntm_transitions Fa (1 - Fc) i)
              ntm_guard q (ntm_exit p i)) }}.
 Proof.
-  intros mu bb a c pL pR p q Hb Hac HL HR Hexit i Hi.
+  intros mu bb a c Fa Fc p q Hb Hac Ha Hc Hexit i Hi.
   unfold ntm_body.
   eapply HSeq with
     (eta2 :=
        subst_bool_pformula ntm_left (ntm_below a)
          (subst_bool_pformula ntm_active (ntm_inside a c)
-            (while_body_post 1 ntm_regions (ntm_transitions pL pR i)
+            (while_body_post 1 ntm_regions (ntm_transitions Fa (1 - Fc) i)
                ntm_guard q (ntm_exit p i)))).
   - apply HRealSample.
     + intros ps Hadm.
@@ -354,6 +478,8 @@ Proof.
       destruct Hpre as [_ Hmass].
       apply psatisfies_p_eq in Hmass.
       cbn [pterm_eval] in Hmass.
+      pose proof (valid_unit_eq ps _ Fa Hadm Hmass Ha) as HFa.
+      pose proof (valid_unit_eq ps _ Fc Hadm Hmass Hc) as HFc.
       unfold while_body_post, ntm_regions, ntm_transitions, ntm_exit.
       cbn [finite_p_and].
       rewrite !subst_bool_pformula_p_and, !subst_bool_pformula_p_eq.
@@ -367,12 +493,15 @@ Proof.
              subst_bool_cformula].
         rewrite !bpv_eq_dec_refl.
         cbn [sample_pterm pterm_eval].
-        rewrite (t3_expect_const ps _ (1 - pL - pR)%R Hmass);
-          [reflexivity |].
-        intro v; rewrite <- HL, <- HR; apply ntm_integral_inside; assumption.
-      * apply psatisfies_p_eq.
-        cbn [pterm_eval].
-        rewrite (Hexit ps Hmass); reflexivity.
+        transitivity
+          (expectation (pstate_measure ps) (q_eval (ntm_cdf_q mu bb c)) -
+           expectation (pstate_measure ps) (q_eval (ntm_cdf_q mu bb a)))%R;
+          [exact (ntm_inside_expect mu bb a c ps Hb Hac) | rewrite HFa, HFc; ring].
+      * pose proof (Hexit ps Hadm) as He; cbn [psatisfies] in He.
+        assert (Hone : psatisfies ps (p_eq (PExpect (QIndicator c_true)) (PConst 1)))
+          by (apply psatisfies_p_eq; cbn [pterm_eval]; exact Hmass).
+        specialize (He Hone); apply psatisfies_p_eq in He; cbn [pterm_eval] in He.
+        apply psatisfies_p_eq; cbn [pterm_eval]; exact He.
     + intros ps Hadm _.
       refine (p_almost_sure_of_pointwise _ _ ps Hadm).
       intro v.
@@ -382,59 +511,69 @@ Proof.
   - eapply HSeq with
       (eta2 :=
          subst_bool_pformula ntm_active (ntm_inside a c)
-           (while_body_post 1 ntm_regions (ntm_transitions pL pR i)
+           (while_body_post 1 ntm_regions (ntm_transitions Fa (1 - Fc) i)
               ntm_guard q (ntm_exit p i)));
       apply HBoolAssign.
 Qed.
 
 Lemma ntm_body_left :
-  forall mu bb a c pL pR : R,
+  forall mu bb a c Fa Fc : R,
     (0 < bb)%R -> (a <= c)%R ->
-    lap_below mu bb a = pL ->
-    lap_above mu bb c = pR ->
+    pformula_valid (ntm_cdf mu bb a Fa) ->
+    pformula_valid (ntm_cdf mu bb c Fc) ->
     forall i : nat,
       (i < 1)%nat ->
-      {{ $(p_concentrated_mass (ntm_regions i) (PConst 1)) }}
+      {{ $(p_concentrated_mass (ntm_regions i) [[ 1 ]]) }}
         $(ntm_body mu bb a c)
-      {{ $(while_body_post 1 ntm_regions (ntm_transitions pL pR i)
-             ntm_guard ntm_q_left (ntm_exit pL i)) }}.
+      {{ $(while_body_post 1 ntm_regions (ntm_transitions Fa (1 - Fc) i)
+             ntm_guard ntm_q_left (ntm_exit Fa i)) }}.
 Proof.
-  intros mu bb a c pL pR Hb Hac HL HR.
-  apply ntm_body_step with (pL := pL); try assumption.
-  intros ps Hmass.
+  intros mu bb a c Fa Fc Hb Hac Ha Hc.
+  apply ntm_body_step; try assumption.
+  intros ps Hadm; cbn [psatisfies]; intro Hm.
+  apply psatisfies_p_eq in Hm; cbn [pterm_eval] in Hm.
+  rename Hm into Hmass.
+  apply psatisfies_p_eq; cbn [pterm_eval].
   unfold ntm_q_left, ntm_guard.
   cbn [condition_pconstruct condition_pconstruct_fuel pconstruct_size
        subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
        subst_bool_cformula c_and c_not].
   rewrite !bpv_eq_dec_refl.
   cbn [sample_pterm pterm_eval].
-  rewrite (t3_expect_const ps _ pL Hmass); [reflexivity |].
-  intro v; rewrite <- HL; apply ntm_integral_left; assumption.
+  transitivity (expectation (pstate_measure ps) (q_eval (ntm_cdf_q mu bb a)));
+    [exact (ntm_left_expect mu bb a c ps Hb Hac) |].
+  exact (valid_unit_eq ps _ Fa Hadm Hmass Ha).
 Qed.
 
 Lemma ntm_body_right :
-  forall mu bb a c pL pR : R,
+  forall mu bb a c Fa Fc : R,
     (0 < bb)%R -> (a <= c)%R ->
-    lap_below mu bb a = pL ->
-    lap_above mu bb c = pR ->
+    pformula_valid (ntm_cdf mu bb a Fa) ->
+    pformula_valid (ntm_cdf mu bb c Fc) ->
     forall i : nat,
       (i < 1)%nat ->
-      {{ $(p_concentrated_mass (ntm_regions i) (PConst 1)) }}
+      {{ $(p_concentrated_mass (ntm_regions i) [[ 1 ]]) }}
         $(ntm_body mu bb a c)
-      {{ $(while_body_post 1 ntm_regions (ntm_transitions pL pR i)
-             ntm_guard ntm_q_right (ntm_exit pR i)) }}.
+      {{ $(while_body_post 1 ntm_regions (ntm_transitions Fa (1 - Fc) i)
+             ntm_guard ntm_q_right (ntm_exit (1 - Fc) i)) }}.
 Proof.
-  intros mu bb a c pL pR Hb Hac HL HR.
-  apply ntm_body_step with (pL := pL); try assumption.
-  intros ps Hmass.
+  intros mu bb a c Fa Fc Hb Hac Ha Hc.
+  apply ntm_body_step; try assumption.
+  intros ps Hadm; cbn [psatisfies]; intro Hm.
+  apply psatisfies_p_eq in Hm; cbn [pterm_eval] in Hm.
+  rename Hm into Hmass.
+  apply psatisfies_p_eq; cbn [pterm_eval].
   unfold ntm_q_right, ntm_guard.
   cbn [condition_pconstruct condition_pconstruct_fuel pconstruct_size
        subst_bool_pterm subst_bool_pconstruct subst_bool_pconstruct_fuel
        subst_bool_cformula c_and c_not].
   rewrite !bpv_eq_dec_refl.
   cbn [sample_pterm pterm_eval].
-  rewrite (t3_expect_const ps _ pR Hmass); [reflexivity |].
-  intro v; rewrite <- HR; apply ntm_integral_right; assumption.
+  transitivity
+    (expectation (pstate_measure ps) (q_eval (QIndicator c_true)) -
+     expectation (pstate_measure ps) (q_eval (ntm_cdf_q mu bb c)))%R;
+    [exact (ntm_right_expect mu bb a c ps Hb Hac) |].
+  rewrite Hmass, (valid_unit_eq ps _ Fc Hadm Hmass Hc); reflexivity.
 Qed.
 
 (** * The loop, for either exit event *)
@@ -444,13 +583,13 @@ Lemma ntm_loop_derivable :
     (0 < pL)%R -> (0 < pR)%R -> (0 < p)%R -> (p <= pL + pR)%R ->
     (forall i : nat,
        (i < 1)%nat ->
-       {{ $(p_concentrated_mass (ntm_regions i) (PConst 1)) }}
+       {{ $(p_concentrated_mass (ntm_regions i) [[ 1 ]]) }}
          $(ntm_body mu bb a c)
        {{ $(while_body_post 1 ntm_regions (ntm_transitions pL pR i)
               ntm_guard q (ntm_exit p i)) }}) ->
-    {{ $(p_concentrated_mass (ntm_regions 0) (PVar ntm_y)) }}
+    {{ $(p_concentrated_mass (ntm_regions 0) [[ ntm_y ]]) }}
       $(ntm_loop mu bb a c)
-    {{ E[$(condition_pconstruct q (c_not ntm_guard))]
+    {{ E[$(condition_pconstruct q <{ ~ $(ntm_guard) }>)]
          = $(ntm_sol p pL pR 0) * ntm_y }}.
 Proof.
   intros mu bb a c pL pR p q HpL HpR Hp Hle Hbody.
@@ -480,14 +619,11 @@ Proof.
         lra.
 Qed.
 
-(** * The monitor, for given exit masses
-
-    The prefix concentrates all mass on the single region, so the loop is
-    enterable. *)
+(** * The prefix concentrates all mass on the single region. *)
 
 Lemma ntm_prefix :
   forall (mu bb a c : R) (theta : PFormula),
-    {{ $(p_concentrated_mass (ntm_regions 0) (PVar ntm_y)) }}
+    {{ $(p_concentrated_mass (ntm_regions 0) [[ ntm_y ]]) }}
       $(ntm_loop mu bb a c)
     {{ $(theta) }} ->
     {{ Pr[true] = ntm_y }}
@@ -530,105 +666,10 @@ Proof.
     + exact Hloop.
 Qed.
 
-Lemma ntm_left_rate :
-  forall mu bb a c pL pR : R,
-    (0 < bb)%R -> (a <= c)%R ->
-    lap_below mu bb a = pL ->
-    lap_above mu bb c = pR ->
-    {{ Pr[true] = ntm_y }}
-      $(ntm_prog mu bb a c)
-    {{ E[$(ntm_reported_left)] = $(pL / (pL + pR)) * ntm_y }}.
-Proof.
-  intros mu bb a c pL pR Hb Hac HL HR.
-  rewrite <- ntm_reported_left_eq.
-  apply ntm_prefix.
-  pose proof (ntm_lap_below_pos mu bb a Hb) as HpL.
-  pose proof (lap_above_pos mu bb Hb c) as HpR.
-  apply (ntm_loop_derivable mu bb a c pL pR pL); try lra.
-  apply ntm_body_left; assumption.
-Qed.
-
-Lemma ntm_right_rate :
-  forall mu bb a c pL pR : R,
-    (0 < bb)%R -> (a <= c)%R ->
-    lap_below mu bb a = pL ->
-    lap_above mu bb c = pR ->
-    {{ Pr[true] = ntm_y }}
-      $(ntm_prog mu bb a c)
-    {{ E[$(ntm_reported_right)] = $(pR / (pL + pR)) * ntm_y }}.
-Proof.
-  intros mu bb a c pL pR Hb Hac HL HR.
-  rewrite <- ntm_reported_right_eq.
-  apply ntm_prefix.
-  pose proof (ntm_lap_below_pos mu bb a Hb) as HpL.
-  pose proof (lap_above_pos mu bb Hb c) as HpR.
-  apply (ntm_loop_derivable mu bb a c pL pR pR); try lra.
-  apply ntm_body_right; assumption.
-Qed.
-
-(** * The Laplace CDF, as a state-logic formula *)
-
-Definition ntm_cdf (mu bb u F : R) : PFormula :=
-  [[ Pr[true] = 1 ->
-     E[ integral ntm_z ~ laplace ( $(mu), $(bb) ), indicator[ntm_z <= $(u)] ] = $(F) ]].
-
-(** Evaluating a rate formula at a point mass pins the parameter down. *)
-Lemma ntm_rate_point :
-  forall (gamma : CFormula) (mu bb p : R) (P : R -> Prop),
-    (0 < bb)%R ->
-    (forall r, satisfies (update_real demo_valuation ntm_z r) gamma <-> P r) ->
-    pformula_valid
-      (PFImpl (p_eq (PExpect (QIndicator c_true)) (PConst 1))
-         (p_eq (PExpect (QIntegral ntm_z (Laplace (TConst mu) (TConst bb))
-                          (QIndicator gamma)))
-               (PConst p))) ->
-    real_integral (fun r => lap_density mu bb r * real_indicator (P r)) = p.
-Proof.
-  intros gamma mu bb p P Hb HP Hvalid.
-  set (ps0 := point_pstate demo_valuation).
-  pose proof (Hvalid ps0 (point_admissible demo_valuation)) as H.
-  cbn [psatisfies] in H.
-  assert (Hone : psatisfies ps0 (p_eq (PExpect (QIndicator c_true)) (PConst 1))).
-  { apply psatisfies_p_eq; cbn [pterm_eval]; unfold ps0.
-    rewrite point_pstate_expect, q_eval_indicatorE.
-    apply real_indicator_true; cbn [c_true satisfies]; tauto. }
-  specialize (H Hone).
-  apply psatisfies_p_eq in H; cbn [pterm_eval] in H.
-  unfold ps0 in H.
-  rewrite point_pstate_expect in H.
-  rewrite <- H; symmetry.
-  apply q_eval_laplace_indicator; assumption.
-Qed.
-
-Lemma ntm_cdf_value :
-  forall mu bb u F : R,
-    (0 < bb)%R ->
-    pformula_valid (ntm_cdf mu bb u F) ->
-    lap_below mu bb u = F.
-Proof.
-  intros mu bb u F Hb Hvalid.
-  rewrite <- (lap_atmost_below mu bb Hb u).
-  exact (ntm_rate_point (FLe (TProgVar ntm_z) (TConst u)) mu bb F (fun r => (r <= u)%R) Hb
-           (fun r => ltac:(cbn [satisfies]; rewrite update_real_same; reflexivity)) Hvalid).
-Qed.
-
-(** The right exit mass is the complement of the CDF at [c]. *)
-Lemma ntm_cdf_above :
-  forall mu bb c Fc : R,
-    (0 < bb)%R ->
-    pformula_valid (ntm_cdf mu bb c Fc) ->
-    lap_above mu bb c = (1 - Fc)%R.
-Proof.
-  intros mu bb c Fc Hb Hvalid.
-  pose proof (ntm_cdf_value mu bb c Fc Hb Hvalid) as H.
-  pose proof (lap_below_above mu bb Hb c) as Hs.
-  lra.
-Qed.
-
 (** * The headline triples
 
-    One certificate, one loop equation [s = (1 - pL - pR) * s + p]; only
-    [q] and the exit mass [p] differ between the two sides. *)
+    One certificate, one loop equation [s = (Fc - Fa) * s + p]; only [q]
+    and the exit mass [p] differ between the two sides. *)
 
 Theorem ntm_left_probability :
   forall mu bb a c Fa Fc : R,
@@ -639,10 +680,12 @@ Theorem ntm_left_probability :
       $(ntm_prog mu bb a c)
     {{ E[$(ntm_reported_left)] = $(Fa / (Fa + (1 - Fc))) * ntm_y }}.
 Proof.
-  intros mu bb a c Fa Fc Hb Hac HA HC.
-  apply ntm_left_rate; try assumption.
-  - apply ntm_cdf_value; assumption.
-  - apply ntm_cdf_above; assumption.
+  intros mu bb a c Fa Fc Hb Hac Ha Hc.
+  destruct (ntm_F_range mu bb a c Fa Fc Hb Ha Hc) as [HFa HFc].
+  rewrite <- ntm_reported_left_eq.
+  apply ntm_prefix.
+  apply (ntm_loop_derivable mu bb a c Fa (1 - Fc) Fa); try lra.
+  apply ntm_body_left; assumption.
 Qed.
 
 Theorem ntm_right_probability :
@@ -654,10 +697,12 @@ Theorem ntm_right_probability :
       $(ntm_prog mu bb a c)
     {{ E[$(ntm_reported_right)] = $((1 - Fc) / (Fa + (1 - Fc))) * ntm_y }}.
 Proof.
-  intros mu bb a c Fa Fc Hb Hac HA HC.
-  apply ntm_right_rate; try assumption.
-  - apply ntm_cdf_value; assumption.
-  - apply ntm_cdf_above; assumption.
+  intros mu bb a c Fa Fc Hb Hac Ha Hc.
+  destruct (ntm_F_range mu bb a c Fa Fc Hb Ha Hc) as [HFa HFc].
+  rewrite <- ntm_reported_right_eq.
+  apply ntm_prefix.
+  apply (ntm_loop_derivable mu bb a c Fa (1 - Fc) (1 - Fc)); try lra.
+  apply ntm_body_right; assumption.
 Qed.
 
 (** The two reported probabilities sum to 1: the monitor terminates almost
@@ -669,10 +714,7 @@ Corollary ntm_exhaustive :
     pformula_valid (ntm_cdf mu bb c Fc) ->
     (Fa / (Fa + (1 - Fc)) + (1 - Fc) / (Fa + (1 - Fc)))%R = 1%R.
 Proof.
-  intros mu bb a c Fa Fc Hb HA HC.
-  pose proof (ntm_cdf_value mu bb a Fa Hb HA) as HL.
-  pose proof (ntm_cdf_above mu bb c Fc Hb HC) as HR.
-  pose proof (ntm_lap_below_pos mu bb a Hb) as HpL.
-  pose proof (lap_above_pos mu bb Hb c) as HpR.
+  intros mu bb a c Fa Fc Hb Ha Hc.
+  destruct (ntm_F_range mu bb a c Fa Fc Hb Ha Hc) as [HFa HFc].
   field; lra.
 Qed.
