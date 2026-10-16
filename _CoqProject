@@ -48,3 +48,14 @@ Soundness/CalculationFacts.v
 ExponentialIntegrals.v
 AnalyticalCalculations.v
 SVT_notation.v
+Completeness/Interface.v
+Completeness/Freshness.v
+Completeness/StructuralRules.v
+Completeness/WeakestPreterm.v
+Completeness/FormulaAbstraction.v
+Completeness/WeakestPrecondition.v
+Completeness/AtomicCertificates.v
+Completeness/SamplingCertificates.v
+Completeness/ConditionalCertificates.v
+Completeness/SequentialCertificates.v
+Completeness/LoopFreeCompleteness.v
